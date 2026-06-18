@@ -1,5 +1,6 @@
 import os
 import discord
+import certifi
 from discord.ext import commands, tasks
 import aiohttp
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -26,7 +27,8 @@ if not all([DISCORD_TOKEN, MONGO_URI, GOOGLE_BOOKS_KEY]):
         "Copy .env.example to .env and fill in DISCORD_TOKEN, MONGO_URI, and GOOGLE_BOOKS_KEY."
     )
 
-db_client = AsyncIOMotorClient(MONGO_URI)
+db_client = AsyncIOMotorClient(MONGO_URI, tlsCAFile=certifi.where())
+
 db = db_client["book_bot_db"]
 users_col = db["users"]
 quotes_col = db["quotes"]        # Nova tabela de citações
