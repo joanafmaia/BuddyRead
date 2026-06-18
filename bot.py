@@ -260,10 +260,18 @@ async def buddy_autocomplete(interaction: discord.Interaction, current: str):
 
 @bot.event
 async def on_ready():
-    await bot.tree.sync()
+    try:
+        # Sincroniza a árvore de comandos com o Discord
+        synced = await bot.tree.sync()
+        print(f"✅ Sincronizados {len(synced)} comandos globalmente.")
+    except Exception as e:
+        print(f"❌ Erro na sincronização: {e}")
+    
     if not daily_reminder_loop.is_running():
         daily_reminder_loop.start()
-    print(f"Logged in as {bot.user} and all premium systems are deployed!")
+        
+    print(f"🚀 Bot {bot.user} está online e pronto!")
+
 
 
 # 8. ALL COMMANDS (SISTEMA INTEGRADO)
