@@ -114,39 +114,37 @@ python bot.py
 
 Once the bot is online, slash commands sync automatically. You can get started with `/help` in your server.
 
-## Deploy on Render
+## Deploy on Render (free tier)
 
-BuddyRead runs as a **Background Worker** (no HTTP port required).
+On Render's free plan, use a **Web Service** (Background Workers are paid). The bot starts a small health endpoint on the `PORT` that Render provides — use it with [UptimeRobot](https://uptimerobot.com) to prevent the service from sleeping.
 
-### Option A: Blueprint (`render.yaml`)
+### Setup
 
-This repo includes a `render.yaml` blueprint. In the [Render Dashboard](https://dashboard.render.com/):
-
-1. **New +** → **Blueprint**
+1. **New +** → **Web Service** (or **Blueprint** with `render.yaml`)
 2. Connect the `BuddyRead` GitHub repository
-3. When prompted, set these environment variables:
-   - `DISCORD_TOKEN`
-   - `MONGO_URI`
-   - `GOOGLE_BOOKS_KEY`
-4. Deploy
-
-### Option B: Manual setup
-
-1. **New +** → **Background Worker**
-2. Connect your GitHub repository
 3. Configure:
    - **Build Command:** `pip install -r requirements.txt`
    - **Start Command:** `python bot.py`
-4. Add the three environment variables under **Environment**
-5. Deploy
+4. Add environment variables: `DISCORD_TOKEN`, `MONGO_URI`, `GOOGLE_BOOKS_KEY`
+5. Deploy and copy your service URL (e.g. `https://buddyread.onrender.com`)
+
+### Keep it awake with UptimeRobot
+
+1. Create a free account at [uptimerobot.com](https://uptimerobot.com)
+2. **Add Monitor** → type **HTTP(s)**
+3. URL: `https://your-app.onrender.com/health`
+4. Interval: **5 minutes**
+5. Save
+
+UptimeRobot pings `/health` every 5 minutes so Render does not spin down the service.
 
 ### Before deploying
 
 - Stop any local instance of the bot (only one process can use the same Discord token)
-- In MongoDB Atlas → **Network Access**, allow `0.0.0.0/0` (or Render's IP ranges)
+- In MongoDB Atlas → **Network Access**, allow `0.0.0.0/0`
 - Enable **Message Content Intent** in the Discord Developer Portal
 
-> On Render's free plan, workers may restart or sleep. For 24/7 uptime, consider a paid plan.
+> Locally, the health server only starts when `PORT` is set — your `.env` does not need it.
 
 ## Deploy on Railway
 

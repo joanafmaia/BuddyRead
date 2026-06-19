@@ -1,8 +1,10 @@
 import os
+import asyncio
 import discord
 import certifi
 from discord.ext import commands, tasks
 import aiohttp
+from aiohttp import web
 from motor.motor_asyncio import AsyncIOMotorClient
 from datetime import datetime, timedelta
 from discord import app_commands
@@ -33,6 +35,22 @@ db = db_client["book_bot_db"]
 users_col = db["users"]
 quotes_col = db["quotes"]        # Nova tabela de citações
 buddies_col = db["buddy_reads"]  # Nova tabela de leituras conjuntas
+
+
+async def health_check(_request):
+    return web.Response(text="BuddyRead is online")
+
+
+async def start_health_server():
+    port = int(os.getenv("PORT", 10000))
+    app = web.Application()
+    app.router.add_get("/", health_check)
+    app.router.add_get("/health", health_check)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+    print(f"Health server listening on port {port}")
 
 
 # 3. PAGINATION VIEW
@@ -607,5 +625,12 @@ async def tbr(interaction: discord.Interaction):
 
 
 # 12. RUN THE BOT
+async def main():
+    if os.getenv("PORT"):
+        await start_health_server()
+    async with bot:
+        await bot.start(DISCORD_TOKEN)
+
+
 if __name__ == "__main__":
-    bot.run(DISCORD_TOKEN)
+    asyncio.run(main())
