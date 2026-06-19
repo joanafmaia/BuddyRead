@@ -236,7 +236,7 @@ class BuddyJoinView(discord.ui.View):
             return
 
         await buddies_col.update_one({"_id": self.match_id}, {"$push": {"members": user_id}})
-        await interaction.response.send_message(f"👥 **{interaction.user.display_name}** successfully joined the room to read **{group['book_title']}**!", inline=False)
+        await interaction.response.send_message(f"👥 **{interaction.user.display_name}** successfully joined the room to read **{group['book_title']}**!")
 
 
 # 7. AUTOCOMPLETE FUNCTIONS
@@ -501,7 +501,7 @@ async def reminders_toggle(interaction: discord.Interaction, enabled: bool):
 
 @tasks.loop(hours=24)
 async def daily_reminder_loop():
-    """Roda a cada 24h procurando usuários inativos há mais de 2 dias"""
+    """Runs every 24h looking for users inactive for more than 2 days"""
     cursor = users_col.find({"reminders": True})
     all_users = await cursor.to_list(length=1000)
     
@@ -519,6 +519,11 @@ async def daily_reminder_loop():
                         await discord_user.send(f"👋 Hey {discord_user.display_name}! We noticed you haven't logged pages for **{book['title']}** in a couple of days. How about reading at least 5 pages today to crush your challenge? 📖✨")
                 except Exception:
                     pass  # Evita quebrar a tarefa caso a DM do usuário seja fechada
+
+
+@daily_reminder_loop.before_loop
+async def before_daily_reminder():
+    await bot.wait_until_ready()
 
 
 # REUTILIZAÇÃO DE COMANDOS BASE DO PACOTE ANTERIOR (Com correções de compatibilidade)

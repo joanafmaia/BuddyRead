@@ -1,0 +1,13 @@
+services:
+  - type: worker
+    name: buddyread
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python bot.py
+    envVars:
+      - key: DISCORD_TOKEN
+        sync: false
+      - key: MONGO_URI
+        sync: false
+      - key: GOOGLE_BOOKS_KEY
+        sync: false
