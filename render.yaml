@@ -12,3 +12,5 @@ services:
         sync: false
       - key: GOOGLE_BOOKS_KEY
         sync: false
+      - key: GUILD_ID
+        sync: false

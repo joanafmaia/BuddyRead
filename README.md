@@ -1,21 +1,21 @@
 # BuddyRead
 
-A Discord bot for managing your reading life, personal library, and group reads. **BuddyRead** helps reading communities track progress, share quotes, and read books together — all within Discord.
+A Discord bot for managing your reading life, personal library, and group reads. **BuddyRead** helps reading communities track progress and read books together — all within Discord.
 
 ## Features
 
 ### Personal library
 - Search books via the **Google Books API** (title or ISBN)
-- Organize books into three states: *Want to Read*, *Currently Reading*, and *Completed*
-- Update page progress with a visual percentage bar
+- Save books to your **Want to Read** list with `/search`
+- Update reading status: *In Progress*, *Finished*, or *Abandoned*
+- Log page progress with a visual percentage bar
 - Rate and write reviews when you finish a book
-- View your full library, TBR list, and remove books
+- View your full library or another member's
 
 ### Profile & stats
-- Profile card with reading counters
+- Profile card with reading counters (yours or others')
 - Annual reading challenge (`/challenge`)
 - Unlockable achievement (badge) system
-- Detailed activity history with pagination
 - Server leaderboard
 
 ### Group reads (Buddy Read)
@@ -23,31 +23,19 @@ A Discord bot for managing your reading life, personal library, and group reads.
 - Other members can join with a button
 - Compare each participant's progress on the same book
 
-### Quotes
-- Save memorable book quotes
-- Get a random quote from the community
-
-### Reminders
-- Automatic DM reminders when no reading activity is logged for 2+ days
-- Enable or disable with `/reminders`
-
 ## Commands
 
 | Command | Description |
 |---------|-------------|
-| `/help` | Bot usage guide |
+| `/help` | List all available commands |
 | `/search` | Search for a book and add it to your library |
-| `/progress` | Update pages read for a book in progress |
+| `/progress` | Log pages read or update reading status |
 | `/profile` | View profile, stats, and achievements |
+| `/challenge` | Set your yearly book goal |
 | `/library` | View full library (yours or another member's) |
 | `/tbr` | View your "Want to Read" list |
 | `/remove_book` | Remove a book from your library |
-| `/challenge` | Set your yearly book goal |
-| `/history` | View your reading activity timeline |
 | `/leaderboard` | View the server's reader rankings |
-| `/reminders` | Enable or disable daily reminders |
-| `/quote add` | Save a quote from a book |
-| `/quote random` | Get a random quote |
 | `/buddyread create` | Create a group reading event |
 | `/buddyread status` | View member progress in a group |
 
@@ -57,7 +45,7 @@ A Discord bot for managing your reading life, personal library, and group reads.
 - **[discord.py](https://discordpy.readthedocs.io/)** — Discord API with slash commands and interactive components
 - **[Motor](https://motor.readthedocs.io/)** — async MongoDB driver
 - **[aiohttp](https://docs.aiohttp.org/)** — async HTTP requests to the Google Books API
-- **MongoDB Atlas** — database for profiles, quotes, and reading groups
+- **MongoDB Atlas** — database for profiles and reading groups
 - **Google Books API** — book search and metadata
 
 ## Prerequisites
@@ -98,6 +86,7 @@ copy .env.example .env      # Windows
 | `DISCORD_TOKEN` | Bot token from the [Discord Developer Portal](https://discord.com/developers/applications) |
 | `MONGO_URI` | MongoDB connection string |
 | `GOOGLE_BOOKS_KEY` | Google Books API key |
+| `GUILD_ID` | (Optional) Discord server ID for instant command sync |
 
 3. In the [Discord Developer Portal](https://discord.com/developers/applications), enable the following **Privileged Gateway Intents** for your bot:
 - **Message Content Intent**
@@ -112,7 +101,7 @@ copy .env.example .env      # Windows
 python bot.py
 ```
 
-Once the bot is online, slash commands sync automatically. You can get started with `/help` in your server.
+Once the bot is online, slash commands sync automatically. Use `/help` to see all commands.
 
 ## Deploy on Render (free tier)
 
@@ -125,7 +114,7 @@ On Render's free plan, use a **Web Service** (Background Workers are paid). The 
 3. Configure:
    - **Build Command:** `pip install -r requirements.txt`
    - **Start Command:** `python bot.py`
-4. Add environment variables: `DISCORD_TOKEN`, `MONGO_URI`, `GOOGLE_BOOKS_KEY`
+4. Add environment variables: `DISCORD_TOKEN`, `MONGO_URI`, `GOOGLE_BOOKS_KEY`, and optionally `GUILD_ID`
 5. Deploy and copy your service URL (e.g. `https://buddyread.onrender.com`)
 
 ### Keep it awake with UptimeRobot
@@ -155,19 +144,48 @@ UptimeRobot pings `/health` every 5 minutes so Render does not spin down the ser
 
 ## Database structure
 
-The bot uses the `book_bot_db` database with three collections:
+The bot uses the `book_bot_db` database with two collections:
 
 | Collection | Contents |
 |------------|----------|
 | `users` | Profiles, bookshelf, history, yearly goal, and preferences |
-| `quotes` | Quotes saved by the community |
 | `buddy_reads` | Group reading sessions |
 
 ## Available achievements
 
+### General
 - **First Step** — Finish your first book
 - **Bookworm** — Finish 5 books
 - **Leviathan Slayer** — Read a book with 400+ pages
+
+### By genre (first book finished in that genre)
+- **Dragon Reader** — Fantasy
+- **Space Cadet** — Science Fiction
+- **Hopeless Romantic** — Romance
+- **Brave Soul** — Horror
+- **Detective** — Mystery / Thriller
+- **Life Explorer** — Biography
+- **Time Traveler** — History
+
+### Diversity
+- **Genre Hopper** — Finish books from 3 different genres
+- **Renaissance Reader** — Finish books from 5 different genres
+
+### Subgenre
+- **Dark Heart** — Finish your first Dark Romance
+- **Twisted Soul** — Finish 5 Dark Romance books
+
+### Specialist (same genre)
+- **Fantasy Fanatic** / **Fantasy Overlord** — 3 / 5 Fantasy books
+- **Romance Addict** / **Romance Devotee** — 3 / 5 Romance books
+- **Mystery Buff** / **Case Closed** — 3 / 5 Mystery/Thriller books
+
+### Fun & social
+- **Short & Sweet** — Finish a book under 150 pages
+- **Brick Layer** — Finish 3 books with 400+ pages
+- **Buddy Reader** — Finish a book from a `/buddyread` group
+
+> Genres come from the Google Books API and are saved per book when you add it via `/search`. Older books without genre data need to be re-added to unlock genre achievements.
 
 ## License
 
