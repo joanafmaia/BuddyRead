@@ -563,7 +563,7 @@ class BookshelfButtons(discord.ui.View):
         await self.update_bookshelf(interaction.user.id, interaction.user.name, "reading")
         await interaction.response.send_message(f"📖 Started reading **{self.title}**! Use `/progress` to log pages.", ephemeral=True)
 
-    @discord.ui.button(label="Mark as Read", style=discord.ButtonStyle.secondary, emoji="✅", row=1)
+    @discord.ui.button(label="Mark as Read", style=discord.ButtonStyle.secondary, emoji="✅")
     async def completed(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.update_bookshelf(interaction.user.id, interaction.user.name, "completed")
         user_profile = await users_col.find_one({"_id": str(interaction.user.id)})
@@ -601,17 +601,25 @@ class SearchResultSelect(discord.ui.Select):
         super().__init__(placeholder="Select a book...", options=options, min_values=1, max_values=1)
 
     async def callback(self, interaction: discord.Interaction):
-        item = self.items_by_id[self.values[0]]
-        volume_info = item["volumeInfo"]
-        book_id = item["id"]
-        book_title = volume_info.get("title", "Unknown Title")
-        pages = volume_info.get("pageCount", 0)
-        categories = volume_info.get("categories", [])
-        embed = build_book_embed(volume_info)
-        await interaction.response.edit_message(
-            embed=embed,
-            view=BookshelfButtons(book_id, book_title, pages, categories),
-        )
+        try:
+            item = self.items_by_id[self.values[0]]
+            volume_info = item["volumeInfo"]
+            book_id = item["id"]
+            book_title = volume_info.get("title", "Unknown Title")
+            pages = volume_info.get("pageCount", 0)
+            categories = volume_info.get("categories", [])
+            embed = build_book_embed(volume_info)
+            await interaction.response.edit_message(
+                embed=embed,
+                view=BookshelfButtons(book_id, book_title, pages, categories),
+            )
+        except Exception as e:
+            print(f"SearchResultSelect error: {e}")
+            if not interaction.response.is_done():
+                await interaction.response.send_message(
+                    "Could not load this book. Please try `/search` again.",
+                    ephemeral=True,
+                )
 
 
 class SearchResultsView(discord.ui.View):
