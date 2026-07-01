@@ -514,29 +514,70 @@ class BuddyJoinView(discord.ui.View):
 
 # 7. AUTOCOMPLETE FUNCTIONS
 async def book_autocomplete(interaction: discord.Interaction, current: str):
-    user_id = str(interaction.user.id)
-    user_profile = await users_col.find_one({"_id": user_id})
-    if not user_profile or "bookshelf" not in user_profile:
+    try:
+        user_id = str(interaction.user.id)
+        user_profile = await users_col.find_one({"_id": user_id})
+        if not user_profile:
+            user_profile = await users_col.find_one({"_id": interaction.user.id})
+        if not user_profile or not user_profile.get("bookshelf"):
+            return []
+
+        status_labels = {
+            "reading": "In Progress",
+            "completed": "Finished",
+            "to_read": "Want to Read",
+            "abandoned": "Abandoned",
+        }
+        current_lower = current.lower()
+        choices = []
+        for book in user_profile["bookshelf"]:
+            title = book.get("title") or "Unknown Title"
+            if current_lower and current_lower not in title.lower():
+                continue
+            book_id = book.get("book_id") or title
+            status = status_labels.get(book.get("status"), "Unknown")
+            name = f"{title[:70]} ({status})"[:100]
+            value = book_id[:100]
+            choices.append(app_commands.Choice(name=name, value=value))
+            if len(choices) >= 25:
+                break
+        return choices
+    except Exception as e:
+        print(f"book_autocomplete error: {e}")
         return []
-    status_labels = {
-        "reading": "In Progress",
-        "completed": "Finished",
-        "to_read": "Want to Read",
-        "abandoned": "Abandoned",
-    }
-    return [
-        app_commands.Choice(
-            name=f"{b['title'][:80]} ({status_labels.get(b['status'], b['status'])})",
-            value=b["title"],
-        )
-        for b in user_profile["bookshelf"]
-        if current.lower() in b["title"].lower()
-    ][:25]
+
+
+def find_shelf_book(bookshelf, identifier):
+    if not identifier:
+        return None
+    for book in bookshelf:
+        if book.get("book_id") == identifier:
+            return book
+        if book.get("title", "").lower() == identifier.lower():
+            return book
+    return None
+
 
 async def buddy_autocomplete(interaction: discord.Interaction, current: str):
-    cursor = buddies_col.find()
-    groups = await cursor.to_list(length=25)
-    return [app_commands.Choice(name=f"{g['book_title']} (Host: {g['host_name']})", value=g["_id"]) for g in groups if current.lower() in g["book_title"].lower()][:25]
+    try:
+        cursor = buddies_col.find()
+        groups = await cursor.to_list(length=25)
+        current_lower = current.lower()
+        choices = []
+        for group in groups:
+            title = group.get("book_title", "Unknown")
+            if current_lower and current_lower not in title.lower():
+                continue
+            host = group.get("host_name", "Unknown")
+            name = f"{title[:70]} (Host: {host})"[:100]
+            value = str(group["_id"])[:100]
+            choices.append(app_commands.Choice(name=name, value=value))
+            if len(choices) >= 25:
+                break
+        return choices
+    except Exception as e:
+        print(f"buddy_autocomplete error: {e}")
+        return []
 
 
 @bot.event
@@ -652,7 +693,7 @@ async def progress(
         await interaction.response.send_message("❌ Your bookshelf is empty! Use `/search` to add books first.", ephemeral=True)
         return
 
-    current_book = next((b for b in user_profile["bookshelf"] if b["title"].lower() == book_title.lower()), None)
+    current_book = find_shelf_book(user_profile["bookshelf"], book_title)
     if not current_book:
         await interaction.response.send_message("❌ That book is not in your library.", ephemeral=True)
         return
@@ -791,17 +832,20 @@ buddy_group = app_commands.Group(name="buddyread", description="Read books synch
 @buddy_group.command(name="create", description="Launch a public reading club event for a specific book")
 @app_commands.autocomplete(book_title=book_autocomplete)
 async def buddy_create(interaction: discord.Interaction, book_title: str):
+    user_profile = await users_col.find_one({"_id": str(interaction.user.id)})
+    shelf_book = find_shelf_book(user_profile.get("bookshelf", []), book_title) if user_profile else None
+    resolved_title = shelf_book["title"] if shelf_book else book_title
     match_id = f"buddy_{interaction.user.id}_{int(datetime.now().timestamp())}"
     group_doc = {
         "_id": match_id,
-        "book_title": book_title,
+        "book_title": resolved_title,
         "host_id": str(interaction.user.id),
         "host_name": interaction.user.display_name,
         "members": [str(interaction.user.id)]
     }
     await buddies_col.insert_one(group_doc)
     
-    embed = discord.Embed(title="👥 New Buddy Read Event Started!", description=f"**{interaction.user.display_name}** wants to read **{book_title}** together! Click the button below to join the journey.", color=0x2ecc71)
+    embed = discord.Embed(title="👥 New Buddy Read Event Started!", description=f"**{interaction.user.display_name}** wants to read **{resolved_title}** together! Click the button below to join the journey.", color=0x2ecc71)
     await interaction.response.send_message(embed=embed, view=BuddyJoinView(match_id))
 
 @buddy_group.command(name="status", description="Compare your current status vs friends inside a group room")
@@ -892,12 +936,18 @@ async def remove_book(interaction: discord.Interaction, title: str):
         await interaction.response.send_message("❌ Your bookshelf is empty!", ephemeral=True)
         return
     bookshelf = user_profile["bookshelf"]
-    updated_bookshelf = [b for b in bookshelf if b["title"].lower() != title.lower()]
-    if len(bookshelf) == len(updated_bookshelf):
-        await interaction.response.send_message(f"❌ Could not find that book.", ephemeral=True)
+    book = find_shelf_book(bookshelf, title)
+    if not book:
+        await interaction.response.send_message("❌ Could not find that book.", ephemeral=True)
         return
+    book_id = book.get("book_id")
+    removed_title = book["title"]
+    if book_id:
+        updated_bookshelf = [b for b in bookshelf if b.get("book_id") != book_id]
+    else:
+        updated_bookshelf = [b for b in bookshelf if b["title"].lower() != removed_title.lower()]
     await users_col.update_one({"_id": user_id}, {"$set": {"bookshelf": updated_bookshelf}})
-    await interaction.response.send_message(f"🗑️ Successfully removed **{title}** from your library!", ephemeral=True)
+    await interaction.response.send_message(f"🗑️ Successfully removed **{removed_title}** from your library!", ephemeral=True)
 
 @bot.tree.command(name="tbr", description="View your 'Want to Read' book list")
 async def tbr(interaction: discord.Interaction):
