@@ -67,6 +67,49 @@ async def fetch_book_thumbnail(book_id):
     return ""
 
 
+def build_book_embed(volume_info):
+    book_title = volume_info.get("title", "Unknown Title")
+    authors = ", ".join(volume_info.get("authors", ["Unknown Author"]))
+    description = volume_info.get("description", "No description available.")
+    if len(description) > 400:
+        description = description[:400] + "..."
+    pages = volume_info.get("pageCount", 0)
+    categories = volume_info.get("categories", [])
+    thumbnail = volume_info.get("imageLinks", {}).get("thumbnail", "").replace("http://", "https://")
+
+    embed = discord.Embed(
+        title=f"📖 {book_title}",
+        description=f"**Author(s):** {authors}\n**Pages:** {pages if pages > 0 else '???'}\n\n*{description}*",
+        color=0x4a90e2,
+    )
+    if categories:
+        embed.add_field(name="Genre", value=categories[0], inline=True)
+    if thumbnail:
+        embed.set_thumbnail(url=thumbnail)
+    return embed
+
+
+def build_search_results_embed(items, query):
+    embed = discord.Embed(
+        title="📚 Search Results",
+        description=f"Found **{len(items)}** books matching **{query}**. Select one below:",
+        color=0x4a90e2,
+    )
+    for i, item in enumerate(items[:5], 1):
+        volume_info = item["volumeInfo"]
+        title = volume_info.get("title", "Unknown Title")
+        authors = ", ".join(volume_info.get("authors", ["Unknown Author"]))
+        pages = volume_info.get("pageCount", 0)
+        embed.add_field(
+            name=f"{i}. {title[:80]}",
+            value=f"{authors} · {pages if pages > 0 else '?'} pages",
+            inline=False,
+        )
+    if len(items) > 5:
+        embed.set_footer(text=f"Preview of 5 — all {len(items)} available in the dropdown.")
+    return embed
+
+
 def current_year():
     return datetime.now().year
 
@@ -540,6 +583,47 @@ class BookshelfButtons(discord.ui.View):
         await interaction.response.send_message(f"🎉 Added **{self.title}** as read{year_note}! Please select a rating below:", view=view, ephemeral=True)
 
 
+class SearchResultSelect(discord.ui.Select):
+    def __init__(self, items):
+        self.items_by_id = {item["id"]: item for item in items}
+        options = []
+        for item in items:
+            volume_info = item["volumeInfo"]
+            title = volume_info.get("title", "Unknown Title")
+            authors = ", ".join(volume_info.get("authors", ["Unknown Author"]))
+            options.append(
+                discord.SelectOption(
+                    label=title[:100],
+                    description=authors[:100] or None,
+                    value=item["id"],
+                )
+            )
+        super().__init__(placeholder="Select a book...", options=options, min_values=1, max_values=1)
+
+    async def callback(self, interaction: discord.Interaction):
+        item = self.items_by_id[self.values[0]]
+        volume_info = item["volumeInfo"]
+        book_id = item["id"]
+        book_title = volume_info.get("title", "Unknown Title")
+        pages = volume_info.get("pageCount", 0)
+        categories = volume_info.get("categories", [])
+        embed = build_book_embed(volume_info)
+        await interaction.response.edit_message(
+            embed=embed,
+            view=BookshelfButtons(book_id, book_title, pages, categories),
+        )
+
+
+class SearchResultsView(discord.ui.View):
+    def __init__(self, items):
+        super().__init__(timeout=120)
+        self.add_item(SearchResultSelect(items))
+
+    async def on_timeout(self):
+        for child in self.children:
+            child.disabled = True
+
+
 # 6. BUDDY READ JOIN BUTTON
 class BuddyJoinView(discord.ui.View):
     def __init__(self, match_id):
@@ -661,7 +745,7 @@ async def help_command(interaction: discord.Interaction):
     embed.add_field(
         name="📚 Library",
         value=(
-            "`/search` — Find a book and add it to your shelf (set the read year before *Mark as Read*)\n"
+            "`/search` — Search by title or ISBN and pick from multiple results\n"
             "`/tbr` — View your Want to Read list\n"
             "`/library` — View a full bookshelf (yours or someone else's)\n"
             "`/remove_book` — Remove a book from your library"
@@ -693,10 +777,11 @@ async def help_command(interaction: discord.Interaction):
 @bot.tree.command(name="search", description="Search for a book by title or ISBN")
 async def search(interaction: discord.Interaction, title: str):
     await interaction.response.defer()
-    api_url = f"https://www.googleapis.com/books/v1/volumes?q={title}&key={GOOGLE_BOOKS_KEY}&maxResults=1"
+    api_url = "https://www.googleapis.com/books/v1/volumes"
+    params = {"q": title, "key": GOOGLE_BOOKS_KEY, "maxResults": 10}
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.get(api_url) as response:
+            async with session.get(api_url, params=params) as response:
                 if response.status != 200:
                     await interaction.followup.send("Could not connect to the Book API right now. 😢")
                     return
@@ -705,20 +790,21 @@ async def search(interaction: discord.Interaction, title: str):
                     await interaction.followup.send("No books found with that title. 😢")
                     return
 
-                volume_info = data["items"][0]["volumeInfo"]
-                book_id = data["items"][0]["id"]
-                book_title = volume_info.get("title", "Unknown Title")
-                authors = ", ".join(volume_info.get("authors", ["Unknown Author"]))
-                description = volume_info.get("description", "No description available.")[:400] + "..."
-                pages = volume_info.get("pageCount", 0)
-                categories = volume_info.get("categories", [])
-                thumbnail = volume_info.get("imageLinks", {}).get("thumbnail", "").replace("http://", "https://")
-
-                embed = discord.Embed(title=f"📖 {book_title}", description=f"**Author(s):** {authors}\n**Pages:** {pages if pages > 0 else '???'}\n\n*{description}*", color=0x4a90e2)
-                if categories:
-                    embed.add_field(name="Genre", value=categories[0], inline=True)
-                if thumbnail: embed.set_thumbnail(url=thumbnail)
-                await interaction.followup.send(embed=embed, view=BookshelfButtons(book_id, book_title, pages, categories))
+                items = data["items"][:10]
+                if len(items) == 1:
+                    volume_info = items[0]["volumeInfo"]
+                    book_id = items[0]["id"]
+                    book_title = volume_info.get("title", "Unknown Title")
+                    pages = volume_info.get("pageCount", 0)
+                    categories = volume_info.get("categories", [])
+                    embed = build_book_embed(volume_info)
+                    await interaction.followup.send(
+                        embed=embed,
+                        view=BookshelfButtons(book_id, book_title, pages, categories),
+                    )
+                else:
+                    embed = build_search_results_embed(items, title)
+                    await interaction.followup.send(embed=embed, view=SearchResultsView(items))
     except Exception:
         await interaction.followup.send("An unexpected error occurred while searching.")
 
