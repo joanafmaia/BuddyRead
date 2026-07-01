@@ -67,6 +67,26 @@ async def fetch_book_thumbnail(book_id):
     return ""
 
 
+def current_year():
+    return datetime.now().year
+
+
+def get_book_completed_year(book):
+    return book.get("completed_year") or current_year()
+
+
+def books_completed_in_year(bookshelf, year=None):
+    year = year or current_year()
+    return [
+        b for b in bookshelf
+        if b.get("status") == "completed" and get_book_completed_year(b) == year
+    ]
+
+
+def is_current_year_finish(book):
+    return get_book_completed_year(book) == current_year()
+
+
 GENRE_ACHIEVEMENTS = [
     ("fantasy", ["fantasy"], "🐲 **Dragon Reader**", "Finished your first Fantasy book!"),
     ("sci_fi", ["science fiction", "sci-fi"], "🚀 **Space Cadet**", "Finished your first Sci-Fi book!"),
@@ -417,6 +437,27 @@ class RatingView(discord.ui.View):
 
 
 # 5. BOOKSHELF CORE BUTTONS
+class ReadYearSelect(discord.ui.Select):
+    def __init__(self, bookshelf_view):
+        self.bookshelf_view = bookshelf_view
+        year = current_year()
+        options = [
+            discord.SelectOption(label=str(y), value=str(y), default=(y == year))
+            for y in range(year, year - 15, -1)
+        ]
+        super().__init__(
+            placeholder="Year read (for yearly challenge)",
+            options=options,
+            min_values=1,
+            max_values=1,
+            row=1,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        self.bookshelf_view.read_year = int(self.values[0])
+        await interaction.response.defer()
+
+
 class BookshelfButtons(discord.ui.View):
     def __init__(self, book_id, title, total_pages, categories=None):
         super().__init__(timeout=None)
@@ -426,6 +467,8 @@ class BookshelfButtons(discord.ui.View):
         self.categories = categories or []
         self.genres = list(normalize_genres(self.categories))
         self.subgenres = list(normalize_subgenres(self.categories))
+        self.read_year = current_year()
+        self.add_item(ReadYearSelect(self))
 
     async def update_bookshelf(self, user_id, username, status):
         user_profile = await users_col.find_one({"_id": str(user_id)})
@@ -444,15 +487,20 @@ class BookshelfButtons(discord.ui.View):
                     book["categories"] = self.categories
                     book["genres"] = self.genres
                     book["subgenres"] = self.subgenres
+                if status == "completed":
+                    book["completed_year"] = self.read_year
                 book_exists = True
                 break
         
         if not book_exists:
-            bookshelf.append({
+            new_book = {
                 "book_id": self.book_id, "title": self.title, "status": status,
                 "current_page": 0, "total_pages": self.total_pages, "rating": None, "review": None,
                 "categories": self.categories, "genres": self.genres, "subgenres": self.subgenres,
-            })
+            }
+            if status == "completed":
+                new_book["completed_year"] = self.read_year
+            bookshelf.append(new_book)
             
         emoji_map = {"to_read": "🔖 Plan:", "reading": "📖 Started:", "completed": "✅ Finished:"}
         history.append(f"{emoji_map.get(status, '▫️')} Moved **{self.title}** to {status.replace('_', ' ')} on {datetime.now().strftime('%d/%m/%Y')}")
@@ -472,21 +520,24 @@ class BookshelfButtons(discord.ui.View):
         await self.update_bookshelf(interaction.user.id, interaction.user.name, "reading")
         await interaction.response.send_message(f"📖 Started reading **{self.title}**! Use `/progress` to log pages.", ephemeral=True)
 
-    @discord.ui.button(label="Mark as Read", style=discord.ButtonStyle.secondary, emoji="✅")
+    @discord.ui.button(label="Mark as Read", style=discord.ButtonStyle.secondary, emoji="✅", row=1)
     async def completed(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.update_bookshelf(interaction.user.id, interaction.user.name, "completed")
         user_profile = await users_col.find_one({"_id": str(interaction.user.id)})
         book = next((b for b in user_profile["bookshelf"] if b["book_id"] == self.book_id), None)
         if book:
-            await mark_buddy_read_finish(interaction.user.id, book)
+            if is_current_year_finish(book):
+                await mark_buddy_read_finish(interaction.user.id, book)
             await users_col.update_one(
                 {"_id": str(interaction.user.id)},
                 {"$set": {"bookshelf": user_profile["bookshelf"]}},
             )
-            completed_books = [b for b in user_profile["bookshelf"] if b["status"] == "completed"]
-            await announce_book_finished(interaction.channel, interaction.user, book, completed_books, interaction.user.id)
+            if is_current_year_finish(book):
+                completed_books = [b for b in user_profile["bookshelf"] if b["status"] == "completed"]
+                await announce_book_finished(interaction.channel, interaction.user, book, completed_books, interaction.user.id)
         view = RatingView(self.book_id, self.title)
-        await interaction.response.send_message("🎉 Awesome! Please select a rating below:", view=view, ephemeral=True)
+        year_note = f" ({self.read_year})" if self.read_year != current_year() else ""
+        await interaction.response.send_message(f"🎉 Added **{self.title}** as read{year_note}! Please select a rating below:", view=view, ephemeral=True)
 
 
 # 6. BUDDY READ JOIN BUTTON
@@ -610,7 +661,7 @@ async def help_command(interaction: discord.Interaction):
     embed.add_field(
         name="📚 Library",
         value=(
-            "`/search` — Find a book and add it to your shelf\n"
+            "`/search` — Find a book and add it to your shelf (set the read year before *Mark as Read*)\n"
             "`/tbr` — View your Want to Read list\n"
             "`/library` — View a full bookshelf (yours or someone else's)\n"
             "`/remove_book` — Remove a book from your library"
@@ -674,7 +725,7 @@ async def search(interaction: discord.Interaction, title: str):
 
 @bot.tree.command(name="progress", description="Log pages read or update reading status for a book")
 @app_commands.autocomplete(book_title=book_autocomplete)
-@app_commands.describe(page="Current page number (for books in progress)", status="Update status without logging pages")
+@app_commands.describe(page="Current page number (for books in progress)", status="Update status without logging pages", year="Year finished (only when marking as Finished)")
 @app_commands.choices(status=[
     app_commands.Choice(name="In Progress", value="reading"),
     app_commands.Choice(name="Finished", value="completed"),
@@ -685,6 +736,7 @@ async def progress(
     book_title: str,
     page: int = None,
     status: app_commands.Choice[str] = None,
+    year: int = None,
 ):
     user_id = str(interaction.user.id)
     user_profile = await users_col.find_one({"_id": user_id})
@@ -717,13 +769,16 @@ async def progress(
 
         if total_pages > 0 and page == total_pages:
             current_book["status"] = "completed"
-            await mark_buddy_read_finish(user_id, current_book)
+            current_book["completed_year"] = current_year()
+            if is_current_year_finish(current_book):
+                await mark_buddy_read_finish(user_id, current_book)
             await users_col.update_one(
                 {"_id": user_id},
                 {"$set": {"bookshelf": user_profile["bookshelf"], "history": history, "last_read": now}},
             )
-            completed_books = [b for b in user_profile["bookshelf"] if b["status"] == "completed"]
-            await announce_book_finished(interaction.channel, interaction.user, current_book, completed_books, user_id)
+            if is_current_year_finish(current_book):
+                completed_books = [b for b in user_profile["bookshelf"] if b["status"] == "completed"]
+                await announce_book_finished(interaction.channel, interaction.user, current_book, completed_books, user_id)
             view = RatingView(current_book["book_id"], current_book["title"])
             await interaction.response.send_message(f"🎉 You finished *{current_book['title']}*! Rate it below:", view=view, ephemeral=True)
         else:
@@ -744,6 +799,12 @@ async def progress(
         return
 
     status_value = status.value
+    if status_value == "completed":
+        if year is not None and (year < 2000 or year > current_year()):
+            await interaction.response.send_message(f"❌ Year must be between **2000** and **{current_year()}**.", ephemeral=True)
+            return
+        current_book["completed_year"] = year or current_year()
+
     status_messages = {
         "reading": ("📖 In Progress", f"📖 Marked **{current_book['title']}** as *In Progress*"),
         "completed": ("✅ Finished", f"🏆 Marked **{current_book['title']}** as *Finished*"),
@@ -758,7 +819,8 @@ async def progress(
     history.append(f"{history_entry} on {now.strftime('%d/%m/%Y')}")
 
     if status_value == "completed":
-        await mark_buddy_read_finish(user_id, current_book)
+        if is_current_year_finish(current_book):
+            await mark_buddy_read_finish(user_id, current_book)
 
     await users_col.update_one(
         {"_id": user_id},
@@ -766,8 +828,9 @@ async def progress(
     )
 
     if status_value == "completed":
-        completed_books = [b for b in user_profile["bookshelf"] if b["status"] == "completed"]
-        await announce_book_finished(interaction.channel, interaction.user, current_book, completed_books, user_id)
+        if is_current_year_finish(current_book):
+            completed_books = [b for b in user_profile["bookshelf"] if b["status"] == "completed"]
+            await announce_book_finished(interaction.channel, interaction.user, current_book, completed_books, user_id)
         view = RatingView(current_book["book_id"], current_book["title"])
         await interaction.response.send_message(f"🎉 You finished *{current_book['title']}*! Rate it below:", view=view, ephemeral=True)
     else:
@@ -795,10 +858,11 @@ async def profile(interaction: discord.Interaction, member: discord.Member = Non
     # Desafio Anual Dinâmico
     goal = user_profile.get("yearly_goal", 0)
     if goal > 0:
-        current_year = datetime.now().year
-        percent = min(round((len(completed) / goal) * 100), 100)
+        challenge_year = current_year()
+        year_completed = books_completed_in_year(bookshelf, challenge_year)
+        percent = min(round((len(year_completed) / goal) * 100), 100)
         bar = "🟩" * round(percent / 10) + "⬛" * (10 - round(percent / 10))
-        embed.add_field(name=f"🏆 {current_year} Challenge", value=f"`{bar}` **{len(completed)} / {goal}** books ({percent}%)", inline=False)
+        embed.add_field(name=f"🏆 {challenge_year} Challenge", value=f"`{bar}` **{len(year_completed)} / {goal}** books ({percent}%)", inline=False)
 
     embed.add_field(name="📖 Reading", value=f"` {len(reading)} `", inline=True)
     embed.add_field(name="✅ Finished", value=f"` {len(completed)} `", inline=True)
@@ -894,7 +958,13 @@ async def library(interaction: discord.Interaction, member: discord.Member = Non
         return
     bookshelf = user_profile["bookshelf"]
     reading_list = [f"▪️ **{b['title']}** (`{b['current_page']}/{b['total_pages']}` pages)" for b in bookshelf if b["status"] == "reading"]
-    completed_list = [f"▪️ **{b['title']}** ({'⭐'*b['rating'] if b.get('rating') else 'No Rating'})" for b in bookshelf if b["status"] == "completed"]
+    completed_list = []
+    for b in bookshelf:
+        if b["status"] != "completed":
+            continue
+        rating = "⭐" * b["rating"] if b.get("rating") else "No Rating"
+        year_bit = f", {b['completed_year']}" if b.get("completed_year") else ""
+        completed_list.append(f"▪️ **{b['title']}** ({rating}{year_bit})")
     abandoned_list = [f"▪️ **{b['title']}**" for b in bookshelf if b["status"] == "abandoned"]
     tbr_list = [f"▪️ {b['title']}" for b in bookshelf if b["status"] == "to_read"]
     embed = discord.Embed(title=f"📖 {target_user.display_name}'s Book Collections", color=0x7ed321)
