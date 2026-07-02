@@ -723,21 +723,31 @@ async def buddy_autocomplete(interaction: discord.Interaction, current: str):
         return []
 
 
+_commands_synced = False
+
+
 @bot.event
 async def on_ready():
+    global _commands_synced
+    print(f"🚀 Bot {bot.user} está online e pronto!")
+
+    if _commands_synced:
+        return
+    _commands_synced = True
+
     try:
         if GUILD_ID:
             guild = discord.Object(id=int(GUILD_ID))
             bot.tree.copy_global_to(guild=guild)
+            bot.tree.clear_commands(guild=None)
+            await bot.tree.sync()
             synced = await bot.tree.sync(guild=guild)
-            print(f"✅ Synced {len(synced)} commands to guild {GUILD_ID}.")
+            print(f"✅ Synced {len(synced)} commands to guild {GUILD_ID} (global commands cleared).")
         else:
             synced = await bot.tree.sync()
             print(f"✅ Synced {len(synced)} commands globally.")
     except Exception as e:
         print(f"❌ Erro na sincronização: {e}")
-        
-    print(f"🚀 Bot {bot.user} está online e pronto!")
 
 
 
