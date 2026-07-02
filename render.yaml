@@ -14,3 +14,5 @@ services:
         sync: false
       - key: GUILD_ID
         sync: false
+      - key: ANNOUNCE_CHANNEL_ID
+        sync: false

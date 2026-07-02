@@ -22,6 +22,7 @@ DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 MONGO_URI = os.getenv("MONGO_URI")
 GOOGLE_BOOKS_KEY = os.getenv("GOOGLE_BOOKS_KEY")
 GUILD_ID = os.getenv("GUILD_ID")
+ANNOUNCE_CHANNEL_ID = os.getenv("ANNOUNCE_CHANNEL_ID")
 
 if not all([DISCORD_TOKEN, MONGO_URI, GOOGLE_BOOKS_KEY]):
     raise RuntimeError(
@@ -345,7 +346,7 @@ def get_finish_achievements(completed_books, book):
     return achievements
 
 
-async def announce_book_finished(channel, member, book, completed_books, user_id):
+async def announce_book_finished(bot_client, member, book, completed_books, user_id):
     completed_count = len(completed_books)
     achievements = get_finish_achievements(completed_books, book)
     embed = discord.Embed(
@@ -363,6 +364,18 @@ async def announce_book_finished(channel, member, book, completed_books, user_id
     thumbnail = await fetch_book_thumbnail(book.get("book_id"))
     if thumbnail:
         embed.set_thumbnail(url=thumbnail)
+
+    channel = None
+    if ANNOUNCE_CHANNEL_ID:
+        try:
+            channel = bot_client.get_channel(int(ANNOUNCE_CHANNEL_ID))
+            if channel is None:
+                channel = await bot_client.fetch_channel(int(ANNOUNCE_CHANNEL_ID))
+        except Exception as e:
+            print(f"announce_book_finished channel error: {e}")
+    if channel is None:
+        return
+
     await channel.send(embed=embed)
 
 
@@ -577,7 +590,7 @@ class BookshelfButtons(discord.ui.View):
             )
             if is_current_year_finish(book):
                 completed_books = [b for b in user_profile["bookshelf"] if b["status"] == "completed"]
-                await announce_book_finished(interaction.channel, interaction.user, book, completed_books, interaction.user.id)
+                await announce_book_finished(interaction.client, interaction.user, book, completed_books, interaction.user.id)
         view = RatingView(self.book_id, self.title)
         year_note = f" ({self.read_year})" if self.read_year != current_year() else ""
         await interaction.response.send_message(f"🎉 Added **{self.title}** as read{year_note}! Please select a rating below:", view=view, ephemeral=True)
@@ -880,7 +893,7 @@ async def progress(
             )
             if is_current_year_finish(current_book):
                 completed_books = [b for b in user_profile["bookshelf"] if b["status"] == "completed"]
-                await announce_book_finished(interaction.channel, interaction.user, current_book, completed_books, user_id)
+                await announce_book_finished(interaction.client, interaction.user, current_book, completed_books, user_id)
             view = RatingView(current_book["book_id"], current_book["title"])
             await interaction.response.send_message(f"🎉 You finished *{current_book['title']}*! Rate it below:", view=view, ephemeral=True)
         else:
@@ -932,7 +945,7 @@ async def progress(
     if status_value == "completed":
         if is_current_year_finish(current_book):
             completed_books = [b for b in user_profile["bookshelf"] if b["status"] == "completed"]
-            await announce_book_finished(interaction.channel, interaction.user, current_book, completed_books, user_id)
+            await announce_book_finished(interaction.client, interaction.user, current_book, completed_books, user_id)
         view = RatingView(current_book["book_id"], current_book["title"])
         await interaction.response.send_message(f"🎉 You finished *{current_book['title']}*! Rate it below:", view=view, ephemeral=True)
     else:
