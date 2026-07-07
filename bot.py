@@ -22,7 +22,7 @@ DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 MONGO_URI = os.getenv("MONGO_URI")
 GOOGLE_BOOKS_KEY = os.getenv("GOOGLE_BOOKS_KEY")
 GUILD_ID = os.getenv("GUILD_ID")
-ANNOUNCE_CHANNEL_ID = os.getenv("ANNOUNCE_CHANNEL_ID")
+ANNOUNCE_CHANNEL_ID = os.getenv("ANNOUNCE_CHANNEL_ID", "1517151054246973611")
 
 if not all([DISCORD_TOKEN, MONGO_URI, GOOGLE_BOOKS_KEY]):
     raise RuntimeError(
@@ -346,6 +346,30 @@ def get_finish_achievements(completed_books, book):
     return achievements
 
 
+async def get_announce_channel(bot_client):
+    if not ANNOUNCE_CHANNEL_ID:
+        print("ANNOUNCE_CHANNEL_ID not configured — skipping book finished announcement")
+        return None
+
+    channel_id = int(ANNOUNCE_CHANNEL_ID)
+
+    try:
+        return await bot_client.fetch_channel(channel_id)
+    except Exception as e:
+        print(f"fetch_channel failed for {channel_id}: {e}")
+
+    if GUILD_ID:
+        try:
+            guild = bot_client.get_guild(int(GUILD_ID))
+            if guild is None:
+                guild = await bot_client.fetch_guild(int(GUILD_ID))
+            return await guild.fetch_channel(channel_id)
+        except Exception as e:
+            print(f"guild fetch_channel failed for {channel_id}: {e}")
+
+    return None
+
+
 async def announce_book_finished(bot_client, member, book, completed_books, user_id):
     completed_count = len(completed_books)
     achievements = get_finish_achievements(completed_books, book)
@@ -365,18 +389,15 @@ async def announce_book_finished(bot_client, member, book, completed_books, user
     if thumbnail:
         embed.set_thumbnail(url=thumbnail)
 
-    channel = None
-    if ANNOUNCE_CHANNEL_ID:
-        try:
-            channel = bot_client.get_channel(int(ANNOUNCE_CHANNEL_ID))
-            if channel is None:
-                channel = await bot_client.fetch_channel(int(ANNOUNCE_CHANNEL_ID))
-        except Exception as e:
-            print(f"announce_book_finished channel error: {e}")
+    channel = await get_announce_channel(bot_client)
     if channel is None:
         return
 
-    await channel.send(embed=embed)
+    try:
+        await channel.send(embed=embed)
+        print(f"Announced book finished: {book['title']} for user {user_id} in channel {channel.id}")
+    except Exception as e:
+        print(f"announce_book_finished send error: {e}")
 
 
 # 3. PAGINATION VIEW
@@ -578,6 +599,7 @@ class BookshelfButtons(discord.ui.View):
 
     @discord.ui.button(label="Mark as Read", style=discord.ButtonStyle.secondary, emoji="✅")
     async def completed(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer(ephemeral=True)
         await self.update_bookshelf(interaction.user.id, interaction.user.name, "completed")
         user_profile = await users_col.find_one({"_id": str(interaction.user.id)})
         book = next((b for b in user_profile["bookshelf"] if b["book_id"] == self.book_id), None)
@@ -590,10 +612,10 @@ class BookshelfButtons(discord.ui.View):
             )
             if is_current_year_finish(book):
                 completed_books = [b for b in user_profile["bookshelf"] if b["status"] == "completed"]
-                await announce_book_finished(interaction.client, interaction.user, book, completed_books, interaction.user.id)
+                await announce_book_finished(bot, interaction.user, book, completed_books, interaction.user.id)
         view = RatingView(self.book_id, self.title)
         year_note = f" ({self.read_year})" if self.read_year != current_year() else ""
-        await interaction.response.send_message(f"🎉 Added **{self.title}** as read{year_note}! Please select a rating below:", view=view, ephemeral=True)
+        await interaction.followup.send(f"🎉 Added **{self.title}** as read{year_note}! Please select a rating below:", view=view, ephemeral=True)
 
 
 class SearchResultSelect(discord.ui.Select):
@@ -768,34 +790,39 @@ async def on_ready():
 async def help_command(interaction: discord.Interaction):
     embed = discord.Embed(
         title="📖 BuddyRead — Command Guide",
-        description="Everything you need to manage your reading life:",
+        description=(
+            "Use commands in **server channels** or **DMs**.\n"
+            "Finishing a book this year posts a public announcement in the reading channel."
+        ),
         color=0x50e3c2,
     )
     embed.add_field(
         name="📚 Library",
         value=(
-            "`/search` — Search by title or ISBN and pick from multiple results\n"
+            "`/search` — Search by title or ISBN; pick from up to 10 results. "
+            "Set the **read year** before *Mark as Read* when backfilling past reads\n"
             "`/tbr` — View your Want to Read list\n"
-            "`/library` — View a full bookshelf (yours or someone else's)\n"
-            "`/remove_book` — Remove a book from your library"
+            "`/library [member]` — View a bookshelf by status (yours or someone else's)\n"
+            "`/remove_book` — Remove a book from your library (autocomplete)"
         ),
         inline=False,
     )
     embed.add_field(
         name="📖 Reading",
         value=(
-            "`/progress` — Log pages or update status (In Progress, Finished, Abandoned)\n"
-            "`/profile` — View stats, badges, and achievements\n"
-            "`/challenge` — Set your yearly reading goal"
+            "`/progress` — Log a **page** or set **status** (In Progress, Finished, Abandoned). "
+            "Use **year** when marking Finished for books read in a past year\n"
+            "`/profile [member]` — Stats, yearly challenge, badges & achievements\n"
+            "`/challenge` — Set your reading goal for this year (1–100 books; only this year's finishes count)"
         ),
         inline=False,
     )
     embed.add_field(
         name="👥 Social",
         value=(
-            "`/buddyread create` — Start a group reading event\n"
-            "`/buddyread status` — See everyone's progress in a group\n"
-            "`/leaderboard` — Server reading rankings"
+            "`/buddyread create` — Start a group reading event for a book in your library\n"
+            "`/buddyread status` — Compare progress with everyone in a buddy read\n"
+            "`/leaderboard` — Server ranking by total books finished"
         ),
         inline=False,
     )
@@ -883,6 +910,7 @@ async def progress(
         percentage = round((page / total_pages) * 100) if total_pages > 0 else 100
 
         if total_pages > 0 and page == total_pages:
+            await interaction.response.defer(ephemeral=True)
             current_book["status"] = "completed"
             current_book["completed_year"] = current_year()
             if is_current_year_finish(current_book):
@@ -893,9 +921,9 @@ async def progress(
             )
             if is_current_year_finish(current_book):
                 completed_books = [b for b in user_profile["bookshelf"] if b["status"] == "completed"]
-                await announce_book_finished(interaction.client, interaction.user, current_book, completed_books, user_id)
+                await announce_book_finished(bot, interaction.user, current_book, completed_books, user_id)
             view = RatingView(current_book["book_id"], current_book["title"])
-            await interaction.response.send_message(f"🎉 You finished *{current_book['title']}*! Rate it below:", view=view, ephemeral=True)
+            await interaction.followup.send(f"🎉 You finished *{current_book['title']}*! Rate it below:", view=view, ephemeral=True)
         else:
             await users_col.update_one(
                 {"_id": user_id},
@@ -934,21 +962,25 @@ async def progress(
     history.append(f"{history_entry} on {now.strftime('%d/%m/%Y')}")
 
     if status_value == "completed":
+        await interaction.response.defer(ephemeral=True)
         if is_current_year_finish(current_book):
             await mark_buddy_read_finish(user_id, current_book)
 
-    await users_col.update_one(
-        {"_id": user_id},
-        {"$set": {"bookshelf": user_profile["bookshelf"], "history": history, "last_read": now}},
-    )
+        await users_col.update_one(
+            {"_id": user_id},
+            {"$set": {"bookshelf": user_profile["bookshelf"], "history": history, "last_read": now}},
+        )
 
-    if status_value == "completed":
         if is_current_year_finish(current_book):
             completed_books = [b for b in user_profile["bookshelf"] if b["status"] == "completed"]
-            await announce_book_finished(interaction.client, interaction.user, current_book, completed_books, user_id)
+            await announce_book_finished(bot, interaction.user, current_book, completed_books, user_id)
         view = RatingView(current_book["book_id"], current_book["title"])
-        await interaction.response.send_message(f"🎉 You finished *{current_book['title']}*! Rate it below:", view=view, ephemeral=True)
+        await interaction.followup.send(f"🎉 You finished *{current_book['title']}*! Rate it below:", view=view, ephemeral=True)
     else:
+        await users_col.update_one(
+            {"_id": user_id},
+            {"$set": {"bookshelf": user_profile["bookshelf"], "history": history, "last_read": now}},
+        )
         await interaction.response.send_message(f"{label} — **{current_book['title']}** updated!", ephemeral=True)
 
 
