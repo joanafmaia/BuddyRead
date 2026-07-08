@@ -866,10 +866,8 @@ async def help_command(interaction: discord.Interaction):
         name="👥 Social",
         value=(
             "`/bookclub create` — Create a shared reading group for one of your books\n"
-            "`/bookclub list` — See active reading groups you can join\n"
             "`/bookclub join` — Join an existing reading group\n"
-            "`/bookclub announce` — Post the invite in your book-of-the-month channel\n"
-            "`/bookclub remind` — Repost a reminder later in that channel\n"
+            "`/bookclub post` — Post or repost the invite in your book-of-the-month channel\n"
             "`/bookclub delete` — Delete a reading group you created\n"
             "`/bookclub status` — Compare progress with everyone in a shared group\n"
             "`/leaderboard` — Server ranking by total books finished"
@@ -1117,32 +1115,6 @@ async def buddy_create(interaction: discord.Interaction, book_title: str):
                 ephemeral=True,
             )
 
-@buddy_group.command(name="list", description="List active reading groups you can join or check")
-async def buddy_list(interaction: discord.Interaction):
-    await interaction.response.defer(ephemeral=True)
-    groups = await buddies_col.find().to_list(length=25)
-
-    if not groups:
-        await interaction.followup.send("❌ There are no active reading groups right now.", ephemeral=True)
-        return
-
-    rows = []
-    current_user_id = str(interaction.user.id)
-    for group in groups[:15]:
-        joined = "Joined" if current_user_id in group.get("members", []) else "Open"
-        rows.append(
-            f"• **{group.get('book_title', 'Unknown Title')}** — Host: **{group.get('host_name', 'Unknown')}** "
-            f"· Members: `{len(group.get('members', []))}` · `{joined}`"
-        )
-
-    embed = discord.Embed(
-        title="👥 Active Reading Groups",
-        description="\n".join(rows),
-        color=0x2ecc71,
-    )
-    embed.set_footer(text="Use /bookclub join to enter a group, or /bookclub status to check progress.")
-    await interaction.followup.send(embed=embed, ephemeral=True)
-
 @buddy_group.command(name="join", description="Join an existing reading group")
 @app_commands.autocomplete(group_id=buddy_autocomplete)
 async def buddy_join(interaction: discord.Interaction, group_id: str):
@@ -1167,30 +1139,9 @@ async def buddy_delete(interaction: discord.Interaction, group_id: str):
         ephemeral=True,
     )
 
-@buddy_group.command(name="announce", description="Post a reading group invite in the book club channel")
+@buddy_group.command(name="post", description="Post or repost a reading group invite in the book club channel")
 @app_commands.autocomplete(group_id=buddy_autocomplete)
-async def buddy_announce(interaction: discord.Interaction, group_id: str):
-    group = await buddies_col.find_one({"_id": group_id})
-    if not group:
-        await interaction.response.send_message("❌ Reading group not found.", ephemeral=True)
-        return
-
-    posted = await post_bookclub_invite(bot, group)
-    if not posted:
-        await interaction.response.send_message(
-            "❌ I could not post in the configured book club channel. Set `BOOKCLUB_CHANNEL_ID` and check permissions.",
-            ephemeral=True,
-        )
-        return
-
-    await interaction.response.send_message(
-        f"📣 Posted **{group['book_title']}** in the book club channel.",
-        ephemeral=True,
-    )
-
-@buddy_group.command(name="remind", description="Repost a reminder for a reading group in the book club channel")
-@app_commands.autocomplete(group_id=buddy_autocomplete)
-async def buddy_remind(interaction: discord.Interaction, group_id: str):
+async def buddy_post(interaction: discord.Interaction, group_id: str):
     group = await buddies_col.find_one({"_id": group_id})
     if not group:
         await interaction.response.send_message("❌ Reading group not found.", ephemeral=True)
@@ -1205,7 +1156,7 @@ async def buddy_remind(interaction: discord.Interaction, group_id: str):
         return
 
     await interaction.response.send_message(
-        f"🔔 Reminder posted for **{group['book_title']}**.",
+        f"📣 Posted **{group['book_title']}** in the book club channel.",
         ephemeral=True,
     )
 
