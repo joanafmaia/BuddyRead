@@ -380,8 +380,8 @@ async def get_configured_channel(bot_client, channel_id_value):
 def build_bookclub_invite_embed(host_name, book_title, reminder=False):
     title = "🔔 Book Club Reminder" if reminder else "👥 Reading Group Created!"
     description = (
-        f"**{host_name}** is reading **{book_title}** with the club.\n"
-        f"Use `/bookclub join` or the button below to join this group."
+        f"**Book of the Month:** **{book_title}**\n"
+        f"Click the button below to join the group read."
     )
     return discord.Embed(title=title, description=description, color=0x2ecc71)
 
@@ -392,6 +392,9 @@ async def post_bookclub_invite(bot_client, group, reminder=False):
         return False
 
     embed = build_bookclub_invite_embed(group["host_name"], group["book_title"], reminder=reminder)
+    thumbnail = await fetch_book_thumbnail(group.get("book_id"))
+    if thumbnail:
+        embed.set_thumbnail(url=thumbnail)
     await channel.send(embed=embed, view=BuddyJoinView(group["_id"]))
     return True
 
@@ -1094,10 +1097,12 @@ async def buddy_create(interaction: discord.Interaction, book_title: str):
     user_profile = await users_col.find_one({"_id": str(interaction.user.id)})
     shelf_book = find_shelf_book(user_profile.get("bookshelf", []), book_title) if user_profile else None
     resolved_title = shelf_book["title"] if shelf_book else book_title
+    resolved_book_id = shelf_book.get("book_id") if shelf_book else None
     match_id = f"buddy_{interaction.user.id}_{int(datetime.now().timestamp())}"
     group_doc = {
         "_id": match_id,
         "book_title": resolved_title,
+        "book_id": resolved_book_id,
         "host_id": str(interaction.user.id),
         "host_name": interaction.user.display_name,
         "members": [str(interaction.user.id)]
@@ -1105,6 +1110,9 @@ async def buddy_create(interaction: discord.Interaction, book_title: str):
     await buddies_col.insert_one(group_doc)
     
     embed = build_bookclub_invite_embed(interaction.user.display_name, resolved_title)
+    thumbnail = await fetch_book_thumbnail(resolved_book_id)
+    if thumbnail:
+        embed.set_thumbnail(url=thumbnail)
     await interaction.response.send_message(embed=embed, view=BuddyJoinView(match_id))
 
     if BOOKCLUB_CHANNEL_ID:
