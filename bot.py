@@ -675,19 +675,8 @@ class BuddyJoinView(discord.ui.View):
 
     @discord.ui.button(label="Join Reading Group", style=discord.ButtonStyle.success, emoji="👥")
     async def join_group(self, interaction: discord.Interaction, button: discord.ui.Button):
-        user_id = str(interaction.user.id)
-        group = await buddies_col.find_one({"_id": self.match_id})
-        
-        if not group:
-            await interaction.response.send_message("❌ This reading group no longer exists.", ephemeral=True)
-            return
-            
-        if user_id in group["members"]:
-            await interaction.response.send_message("🤝 You are already a member of this reading group!", ephemeral=True)
-            return
-
-        await buddies_col.update_one({"_id": self.match_id}, {"$push": {"members": user_id}})
-        await interaction.response.send_message(f"👥 **{interaction.user.display_name}** successfully joined the room to read **{group['book_title']}**!")
+        message, ephemeral = await join_buddy_group(self.match_id, interaction.user)
+        await interaction.response.send_message(message, ephemeral=ephemeral)
 
 
 # 7. AUTOCOMPLETE FUNCTIONS
@@ -725,6 +714,21 @@ async def book_autocomplete(interaction: discord.Interaction, current: str):
         return []
 
 
+async def progress_book_autocomplete(interaction: discord.Interaction, current: str):
+    try:
+        choices = await book_autocomplete(interaction, current)
+        filtered = []
+        for choice in choices:
+            name_lower = choice.name.lower()
+            if "(finished)" in name_lower:
+                continue
+            filtered.append(choice)
+        return filtered
+    except Exception as e:
+        print(f"progress_book_autocomplete error: {e}")
+        return []
+
+
 def find_shelf_book(bookshelf, identifier):
     if not identifier:
         return None
@@ -756,6 +760,20 @@ async def buddy_autocomplete(interaction: discord.Interaction, current: str):
     except Exception as e:
         print(f"buddy_autocomplete error: {e}")
         return []
+
+
+async def join_buddy_group(group_id, user):
+    user_id = str(user.id)
+    group = await buddies_col.find_one({"_id": group_id})
+
+    if not group:
+        return "❌ Reading group not found.", True
+
+    if user_id in group["members"]:
+        return "🤝 You are already a member of this reading group!", True
+
+    await buddies_col.update_one({"_id": group_id}, {"$push": {"members": user_id}})
+    return f"👥 **{user.display_name}** joined **{group['book_title']}**!", False
 
 
 _commands_synced = False
@@ -792,7 +810,8 @@ async def help_command(interaction: discord.Interaction):
         title="📖 BuddyRead — Command Guide",
         description=(
             "Use commands in **server channels** or **DMs**.\n"
-            "Finishing a book this year posts a public announcement in the reading channel."
+            "Finishing a book this year posts a public announcement in the reading channel.\n"
+            "**Note:** `/buddyread` was renamed to `/bookclub`."
         ),
         color=0x50e3c2,
     )
@@ -820,8 +839,11 @@ async def help_command(interaction: discord.Interaction):
     embed.add_field(
         name="👥 Social",
         value=(
-            "`/buddyread create` — Start a group reading event for a book in your library\n"
-            "`/buddyread status` — Compare progress with everyone in a buddy read\n"
+            "`/bookclub create` — Create a shared reading group for one of your books\n"
+            "`/bookclub list` — See active reading groups you can join\n"
+            "`/bookclub join` — Join an existing reading group\n"
+            "`/bookclub delete` — Delete a reading group you created\n"
+            "`/bookclub status` — Compare progress with everyone in a shared group\n"
             "`/leaderboard` — Server ranking by total books finished"
         ),
         inline=False,
@@ -866,7 +888,7 @@ async def search(interaction: discord.Interaction, title: str):
 
 
 @bot.tree.command(name="progress", description="Log pages read or update reading status for a book")
-@app_commands.autocomplete(book_title=book_autocomplete)
+@app_commands.autocomplete(book_title=progress_book_autocomplete)
 @app_commands.describe(page="Current page number (for books in progress)", status="Update status without logging pages", year="Year finished (only when marking as Finished)")
 @app_commands.choices(status=[
     app_commands.Choice(name="In Progress", value="reading"),
@@ -1037,10 +1059,10 @@ async def challenge(interaction: discord.Interaction, books_goal: int):
     await interaction.response.send_message(f"🏆 Your {current_year} Reading Challenge has been set to **{books_goal}** books!", ephemeral=True)
 
 
-# BUDDY READ (/buddyread)
-buddy_group = app_commands.Group(name="buddyread", description="Read books synchronized with your group")
+# BOOK CLUB (/bookclub)
+buddy_group = app_commands.Group(name="bookclub", description="Create, join, and track shared reading groups")
 
-@buddy_group.command(name="create", description="Launch a public reading club event for a specific book")
+@buddy_group.command(name="create", description="Create a shared reading group for one of your books")
 @app_commands.autocomplete(book_title=book_autocomplete)
 async def buddy_create(interaction: discord.Interaction, book_title: str):
     user_profile = await users_col.find_one({"_id": str(interaction.user.id)})
@@ -1056,15 +1078,72 @@ async def buddy_create(interaction: discord.Interaction, book_title: str):
     }
     await buddies_col.insert_one(group_doc)
     
-    embed = discord.Embed(title="👥 New Buddy Read Event Started!", description=f"**{interaction.user.display_name}** wants to read **{resolved_title}** together! Click the button below to join the journey.", color=0x2ecc71)
+    embed = discord.Embed(
+        title="👥 Reading Group Created!",
+        description=(
+            f"**{interaction.user.display_name}** wants to read **{resolved_title}** together!\n"
+            f"Use `/bookclub join` or the button below to enter this group."
+        ),
+        color=0x2ecc71,
+    )
     await interaction.response.send_message(embed=embed, view=BuddyJoinView(match_id))
 
-@buddy_group.command(name="status", description="Compare your current status vs friends inside a group room")
+@buddy_group.command(name="list", description="List active reading groups you can join or check")
+async def buddy_list(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+    groups = await buddies_col.find().to_list(length=25)
+
+    if not groups:
+        await interaction.followup.send("❌ There are no active reading groups right now.", ephemeral=True)
+        return
+
+    rows = []
+    current_user_id = str(interaction.user.id)
+    for group in groups[:15]:
+        joined = "Joined" if current_user_id in group.get("members", []) else "Open"
+        rows.append(
+            f"• **{group.get('book_title', 'Unknown Title')}** — Host: **{group.get('host_name', 'Unknown')}** "
+            f"· Members: `{len(group.get('members', []))}` · `{joined}`"
+        )
+
+    embed = discord.Embed(
+        title="👥 Active Reading Groups",
+        description="\n".join(rows),
+        color=0x2ecc71,
+    )
+    embed.set_footer(text="Use /bookclub join to enter a group, or /bookclub status to check progress.")
+    await interaction.followup.send(embed=embed, ephemeral=True)
+
+@buddy_group.command(name="join", description="Join an existing reading group")
+@app_commands.autocomplete(group_id=buddy_autocomplete)
+async def buddy_join(interaction: discord.Interaction, group_id: str):
+    message, ephemeral = await join_buddy_group(group_id, interaction.user)
+    await interaction.response.send_message(message, ephemeral=ephemeral)
+
+@buddy_group.command(name="delete", description="Delete a reading group you created")
+@app_commands.autocomplete(group_id=buddy_autocomplete)
+async def buddy_delete(interaction: discord.Interaction, group_id: str):
+    group = await buddies_col.find_one({"_id": group_id})
+    if not group:
+        await interaction.response.send_message("❌ Reading group not found.", ephemeral=True)
+        return
+
+    if group.get("host_id") != str(interaction.user.id):
+        await interaction.response.send_message("❌ Only the group host can delete this reading group.", ephemeral=True)
+        return
+
+    await buddies_col.delete_one({"_id": group_id})
+    await interaction.response.send_message(
+        f"🗑️ Deleted the reading group for **{group.get('book_title', 'Unknown Title')}**.",
+        ephemeral=True,
+    )
+
+@buddy_group.command(name="status", description="Check the reading progress of a shared group")
 @app_commands.autocomplete(group_id=buddy_autocomplete)
 async def buddy_status(interaction: discord.Interaction, group_id: str):
     group = await buddies_col.find_one({"_id": group_id})
     if not group:
-        await interaction.response.send_message("❌ Group event not found.", ephemeral=True)
+        await interaction.response.send_message("❌ Reading group not found.", ephemeral=True)
         return
 
     await interaction.response.defer()
@@ -1089,7 +1168,7 @@ async def buddy_status(interaction: discord.Interaction, group_id: str):
                 
         rows.append(f"• **{name}**: {page_info}")
 
-    embed = discord.Embed(title=f"📊 Status Room: {group['book_title']}", description="\n".join(rows), color=0x7ed321)
+    embed = discord.Embed(title=f"📊 Reading Group Status: {group['book_title']}", description="\n".join(rows), color=0x7ed321)
     await interaction.followup.send(embed=embed)
 
 bot.tree.add_command(buddy_group)
