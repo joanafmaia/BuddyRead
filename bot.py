@@ -63,7 +63,9 @@ async def fetch_book_thumbnail(book_id):
             async with session.get(api_url) as resp:
                 if resp.status == 200:
                     data = await resp.json()
-                    return data.get("volumeInfo", {}).get("imageLinks", {}).get("thumbnail", "").replace("http://", "https://")
+                    image_links = data.get("volumeInfo", {}).get("imageLinks", {})
+                    thumbnail = image_links.get("thumbnail") or image_links.get("smallThumbnail") or ""
+                    return thumbnail.replace("http://", "https://")
     except Exception:
         pass
     return ""
@@ -392,11 +394,57 @@ async def post_bookclub_invite(bot_client, group, reminder=False):
         return False
 
     embed = build_bookclub_invite_embed(group["host_name"], group["book_title"], reminder=reminder)
-    thumbnail = await fetch_book_thumbnail(group.get("book_id"))
+    thumbnail = group.get("thumbnail_url") or await fetch_book_thumbnail(group.get("book_id"))
     if thumbnail:
         embed.set_thumbnail(url=thumbnail)
     await channel.send(embed=embed, view=BuddyJoinView(group["_id"]))
     return True
+
+
+async def hydrate_legacy_bookclub_group(group):
+    if group.get("book_id") and group.get("thumbnail_url"):
+        return group
+
+    host_id = group.get("host_id")
+    if not host_id:
+        return group
+
+    host_profile = await users_col.find_one({"_id": host_id})
+    if not host_profile or not host_profile.get("bookshelf"):
+        return group
+
+    matched_book = next(
+        (
+            book for book in host_profile["bookshelf"]
+            if book.get("title", "").lower() == group.get("book_title", "").lower()
+        ),
+        None,
+    )
+    if not matched_book:
+        matched_book = next(
+            (
+                book for book in host_profile["bookshelf"]
+                if group.get("book_title", "").lower() in book.get("title", "").lower()
+                or book.get("title", "").lower() in group.get("book_title", "").lower()
+            ),
+            None,
+        )
+    if not matched_book:
+        return group
+
+    updates = {}
+    if matched_book.get("book_id") and not group.get("book_id"):
+        updates["book_id"] = matched_book.get("book_id")
+    if updates.get("book_id") or group.get("book_id"):
+        thumbnail = await fetch_book_thumbnail(updates.get("book_id") or group.get("book_id"))
+        if thumbnail and not group.get("thumbnail_url"):
+            updates["thumbnail_url"] = thumbnail
+
+    if updates:
+        await buddies_col.update_one({"_id": group["_id"]}, {"$set": updates})
+        group.update(updates)
+
+    return group
 
 
 async def announce_book_finished(bot_client, member, book, completed_books, user_id):
@@ -1098,11 +1146,13 @@ async def buddy_create(interaction: discord.Interaction, book_title: str):
     shelf_book = find_shelf_book(user_profile.get("bookshelf", []), book_title) if user_profile else None
     resolved_title = shelf_book["title"] if shelf_book else book_title
     resolved_book_id = shelf_book.get("book_id") if shelf_book else None
+    resolved_thumbnail = await fetch_book_thumbnail(resolved_book_id)
     match_id = f"buddy_{interaction.user.id}_{int(datetime.now().timestamp())}"
     group_doc = {
         "_id": match_id,
         "book_title": resolved_title,
         "book_id": resolved_book_id,
+        "thumbnail_url": resolved_thumbnail,
         "host_id": str(interaction.user.id),
         "host_name": interaction.user.display_name,
         "members": [str(interaction.user.id)]
@@ -1110,9 +1160,8 @@ async def buddy_create(interaction: discord.Interaction, book_title: str):
     await buddies_col.insert_one(group_doc)
     
     embed = build_bookclub_invite_embed(interaction.user.display_name, resolved_title)
-    thumbnail = await fetch_book_thumbnail(resolved_book_id)
-    if thumbnail:
-        embed.set_thumbnail(url=thumbnail)
+    if resolved_thumbnail:
+        embed.set_thumbnail(url=resolved_thumbnail)
     await interaction.response.send_message(embed=embed, view=BuddyJoinView(match_id))
 
     if BOOKCLUB_CHANNEL_ID:
@@ -1155,6 +1204,8 @@ async def buddy_post(interaction: discord.Interaction, group_id: str):
         await interaction.response.send_message("❌ Reading group not found.", ephemeral=True)
         return
 
+    group = await hydrate_legacy_bookclub_group(group)
+
     posted = await post_bookclub_invite(bot, group, reminder=True)
     if not posted:
         await interaction.response.send_message(
@@ -1175,6 +1226,7 @@ async def buddy_status(interaction: discord.Interaction, group_id: str):
     if not group:
         await interaction.response.send_message("❌ Reading group not found.", ephemeral=True)
         return
+    group = await hydrate_legacy_bookclub_group(group)
 
     await interaction.response.defer()
     rows = []
