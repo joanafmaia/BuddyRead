@@ -23,6 +23,7 @@ MONGO_URI = os.getenv("MONGO_URI")
 GOOGLE_BOOKS_KEY = os.getenv("GOOGLE_BOOKS_KEY")
 GUILD_ID = os.getenv("GUILD_ID")
 ANNOUNCE_CHANNEL_ID = os.getenv("ANNOUNCE_CHANNEL_ID", "1517151054246973611")
+BOOKCLUB_CHANNEL_ID = os.getenv("BOOKCLUB_CHANNEL_ID")
 
 if not all([DISCORD_TOKEN, MONGO_URI, GOOGLE_BOOKS_KEY]):
     raise RuntimeError(
@@ -350,8 +351,14 @@ async def get_announce_channel(bot_client):
     if not ANNOUNCE_CHANNEL_ID:
         print("ANNOUNCE_CHANNEL_ID not configured — skipping book finished announcement")
         return None
+    return await get_configured_channel(bot_client, ANNOUNCE_CHANNEL_ID)
 
-    channel_id = int(ANNOUNCE_CHANNEL_ID)
+
+async def get_configured_channel(bot_client, channel_id_value):
+    if not channel_id_value:
+        return None
+
+    channel_id = int(channel_id_value)
 
     try:
         return await bot_client.fetch_channel(channel_id)
@@ -368,6 +375,25 @@ async def get_announce_channel(bot_client):
             print(f"guild fetch_channel failed for {channel_id}: {e}")
 
     return None
+
+
+def build_bookclub_invite_embed(host_name, book_title, reminder=False):
+    title = "🔔 Book Club Reminder" if reminder else "👥 Reading Group Created!"
+    description = (
+        f"**{host_name}** is reading **{book_title}** with the club.\n"
+        f"Use `/bookclub join` or the button below to join this group."
+    )
+    return discord.Embed(title=title, description=description, color=0x2ecc71)
+
+
+async def post_bookclub_invite(bot_client, group, reminder=False):
+    channel = await get_configured_channel(bot_client, BOOKCLUB_CHANNEL_ID)
+    if channel is None:
+        return False
+
+    embed = build_bookclub_invite_embed(group["host_name"], group["book_title"], reminder=reminder)
+    await channel.send(embed=embed, view=BuddyJoinView(group["_id"]))
+    return True
 
 
 async def announce_book_finished(bot_client, member, book, completed_books, user_id):
@@ -842,6 +868,8 @@ async def help_command(interaction: discord.Interaction):
             "`/bookclub create` — Create a shared reading group for one of your books\n"
             "`/bookclub list` — See active reading groups you can join\n"
             "`/bookclub join` — Join an existing reading group\n"
+            "`/bookclub announce` — Post the invite in your book-of-the-month channel\n"
+            "`/bookclub remind` — Repost a reminder later in that channel\n"
             "`/bookclub delete` — Delete a reading group you created\n"
             "`/bookclub status` — Compare progress with everyone in a shared group\n"
             "`/leaderboard` — Server ranking by total books finished"
@@ -1078,15 +1106,16 @@ async def buddy_create(interaction: discord.Interaction, book_title: str):
     }
     await buddies_col.insert_one(group_doc)
     
-    embed = discord.Embed(
-        title="👥 Reading Group Created!",
-        description=(
-            f"**{interaction.user.display_name}** wants to read **{resolved_title}** together!\n"
-            f"Use `/bookclub join` or the button below to enter this group."
-        ),
-        color=0x2ecc71,
-    )
+    embed = build_bookclub_invite_embed(interaction.user.display_name, resolved_title)
     await interaction.response.send_message(embed=embed, view=BuddyJoinView(match_id))
+
+    if BOOKCLUB_CHANNEL_ID:
+        posted = await post_bookclub_invite(bot, group_doc)
+        if not posted:
+            await interaction.followup.send(
+                "⚠️ Group created, but I could not post it in the configured book club channel.",
+                ephemeral=True,
+            )
 
 @buddy_group.command(name="list", description="List active reading groups you can join or check")
 async def buddy_list(interaction: discord.Interaction):
@@ -1135,6 +1164,48 @@ async def buddy_delete(interaction: discord.Interaction, group_id: str):
     await buddies_col.delete_one({"_id": group_id})
     await interaction.response.send_message(
         f"🗑️ Deleted the reading group for **{group.get('book_title', 'Unknown Title')}**.",
+        ephemeral=True,
+    )
+
+@buddy_group.command(name="announce", description="Post a reading group invite in the book club channel")
+@app_commands.autocomplete(group_id=buddy_autocomplete)
+async def buddy_announce(interaction: discord.Interaction, group_id: str):
+    group = await buddies_col.find_one({"_id": group_id})
+    if not group:
+        await interaction.response.send_message("❌ Reading group not found.", ephemeral=True)
+        return
+
+    posted = await post_bookclub_invite(bot, group)
+    if not posted:
+        await interaction.response.send_message(
+            "❌ I could not post in the configured book club channel. Set `BOOKCLUB_CHANNEL_ID` and check permissions.",
+            ephemeral=True,
+        )
+        return
+
+    await interaction.response.send_message(
+        f"📣 Posted **{group['book_title']}** in the book club channel.",
+        ephemeral=True,
+    )
+
+@buddy_group.command(name="remind", description="Repost a reminder for a reading group in the book club channel")
+@app_commands.autocomplete(group_id=buddy_autocomplete)
+async def buddy_remind(interaction: discord.Interaction, group_id: str):
+    group = await buddies_col.find_one({"_id": group_id})
+    if not group:
+        await interaction.response.send_message("❌ Reading group not found.", ephemeral=True)
+        return
+
+    posted = await post_bookclub_invite(bot, group, reminder=True)
+    if not posted:
+        await interaction.response.send_message(
+            "❌ I could not post in the configured book club channel. Set `BOOKCLUB_CHANNEL_ID` and check permissions.",
+            ephemeral=True,
+        )
+        return
+
+    await interaction.response.send_message(
+        f"🔔 Reminder posted for **{group['book_title']}**.",
         ephemeral=True,
     )
 

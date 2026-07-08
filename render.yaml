@@ -16,3 +16,5 @@ services:
         sync: false
       - key: ANNOUNCE_CHANNEL_ID
         sync: false
+      - key: BOOKCLUB_CHANNEL_ID
+        sync: false
