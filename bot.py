@@ -695,6 +695,12 @@ class LibraryView(discord.ui.View):
         self.current_page = 0
         self.items_per_page = 24
         self._refresh_items()
+        self._rebuild_section_select()
+
+    def _rebuild_section_select(self):
+        for child in self.children.copy():
+            if isinstance(child, LibrarySectionSelect):
+                self.remove_item(child)
         self.add_item(LibrarySectionSelect(self))
 
     def _refresh_items(self):
@@ -783,16 +789,25 @@ class LibraryView(discord.ui.View):
 class LibrarySectionSelect(discord.ui.Select):
     def __init__(self, library_view):
         self.library_view = library_view
+        current = library_view.section
+        current_label, _, _ = LibraryView.SECTIONS[current]
         options = [
-            discord.SelectOption(label=label, value=key, default=(key == library_view.section))
+            discord.SelectOption(label=label, value=key, default=(key == current))
             for key, (label, _, _) in LibraryView.SECTIONS.items()
         ]
-        super().__init__(placeholder="Pick a shelf 🎀", options=options, min_values=1, max_values=1, row=0)
+        super().__init__(
+            placeholder=current_label,
+            options=options,
+            min_values=1,
+            max_values=1,
+            row=0,
+        )
 
     async def callback(self, interaction: discord.Interaction):
         self.library_view.section = self.values[0]
         self.library_view.current_page = 0
         self.library_view._refresh_items()
+        self.library_view._rebuild_section_select()
         embed, book_id = self.library_view.get_embed()
         await self.library_view.apply_library_cover(embed, book_id)
         await interaction.response.edit_message(embed=embed, view=self.library_view)
