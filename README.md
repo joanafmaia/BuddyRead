@@ -6,22 +6,23 @@ A Discord bot for managing your reading life, personal library, and group reads.
 
 ### Personal library
 - Search books via the **Google Books API** (title or ISBN)
-- Save books to your **Want to Read** list with `/search`
-- Update reading status: *In Progress*, *Finished*, or *Abandoned*
-- Log page progress with a visual percentage bar
-- Rate and write reviews when you finish a book
-- View your full library or another member's
+- Save books to your **wishlist** with `/search`
+- Browse your full catalog with `/library` (filters for reading, finished, wishlist, paused)
+- Update reading status: *Reading*, *Finished*, *Wishlist*, or *Paused*
+- Log page progress with heart progress bars
+- Optional rating when you finish a book
+- View reading activity with `/history`
 
 ### Profile & stats
 - Profile card with reading counters (yours or others')
 - Annual reading challenge (`/challenge`)
 - Unlockable achievement (badge) system
-- Server leaderboard
+- Server leaderboard (members of the current server only)
 
-### Group reads (Buddy Read)
-- Create joint reading events
-- Other members can join with a button
-- Compare each participant's progress on the same book
+### Group reads (Book Club)
+- `/bookclub create` — start a group read (invite in chat)
+- `/bookclub month` — Book of the Month posted in the book club channel
+- Join with a button, compare progress with `/bookclub status`
 
 ## Commands
 
@@ -29,15 +30,20 @@ A Discord bot for managing your reading life, personal library, and group reads.
 |---------|-------------|
 | `/help` | List all available commands |
 | `/search` | Search for a book and add it to your library |
+| `/library` | Browse full catalog with filters and covers |
+| `/history` | View recent reading activity |
 | `/progress` | Log pages read or update reading status |
+| `/edit_book` | Edit rating, year, pages, or shelf status |
+| `/remove_book` | Remove a book from your library |
 | `/profile` | View profile, stats, and achievements |
 | `/challenge` | Set your yearly book goal |
-| `/library` | View full library (yours or another member's) |
-| `/tbr` | View your "Want to Read" list |
-| `/remove_book` | Remove a book from your library |
-| `/leaderboard` | View the server's reader rankings |
-| `/buddyread create` | Create a group reading event |
-| `/buddyread status` | View member progress in a group |
+| `/leaderboard` | Server reader rankings (this year or all time) |
+| `/bookclub create` | Start a group read in the current chat |
+| `/bookclub month` | Book of the Month in the book club channel |
+| `/bookclub join` | Join an existing group |
+| `/bookclub post` | Repost a group invite |
+| `/bookclub status` | View member progress in a group |
+| `/bookclub delete` | Delete a group you host |
 
 ## Tech stack
 
@@ -87,6 +93,8 @@ copy .env.example .env      # Windows
 | `MONGO_URI` | MongoDB connection string |
 | `GOOGLE_BOOKS_KEY` | Google Books API key |
 | `GUILD_ID` | (Optional) Discord server ID for instant command sync |
+| `ANNOUNCE_CHANNEL_ID` | Channel for book-finished celebrations |
+| `BOOKCLUB_CHANNEL_ID` | Channel for Book of the Month posts |
 
 3. In the [Discord Developer Portal](https://discord.com/developers/applications), enable the following **Privileged Gateway Intents** for your bot:
 - **Message Content Intent**
@@ -135,13 +143,6 @@ UptimeRobot pings `/health` every 5 minutes so Render does not spin down the ser
 
 > Locally, the health server only starts when `PORT` is set — your `.env` does not need it.
 
-## Deploy on Railway
-
-1. **New Project** → **Deploy from GitHub** → select `BuddyRead`
-2. Set **Start Command** to `python bot.py` (or use the included `Procfile`)
-3. Add `DISCORD_TOKEN`, `MONGO_URI`, and `GOOGLE_BOOKS_KEY` under **Variables**
-4. Deploy as a **Worker** service (not a web service)
-
 ## Database structure
 
 The bot uses the `book_bot_db` database with two collections:
@@ -150,42 +151,6 @@ The bot uses the `book_bot_db` database with two collections:
 |------------|----------|
 | `users` | Profiles, bookshelf, history, yearly goal, and preferences |
 | `buddy_reads` | Group reading sessions |
-
-## Available achievements
-
-### General
-- **First Step** — Finish your first book
-- **Bookworm** — Finish 5 books
-- **Leviathan Slayer** — Read a book with 400+ pages
-
-### By genre (first book finished in that genre)
-- **Dragon Reader** — Fantasy
-- **Space Cadet** — Science Fiction
-- **Hopeless Romantic** — Romance
-- **Brave Soul** — Horror
-- **Detective** — Mystery / Thriller
-- **Life Explorer** — Biography
-- **Time Traveler** — History
-
-### Diversity
-- **Genre Hopper** — Finish books from 3 different genres
-- **Renaissance Reader** — Finish books from 5 different genres
-
-### Subgenre
-- **Dark Heart** — Finish your first Dark Romance
-- **Twisted Soul** — Finish 5 Dark Romance books
-
-### Specialist (same genre)
-- **Fantasy Fanatic** / **Fantasy Overlord** — 3 / 5 Fantasy books
-- **Romance Addict** / **Romance Devotee** — 3 / 5 Romance books
-- **Mystery Buff** / **Case Closed** — 3 / 5 Mystery/Thriller books
-
-### Fun & social
-- **Short & Sweet** — Finish a book under 150 pages
-- **Brick Layer** — Finish 3 books with 400+ pages
-- **Buddy Reader** — Finish a book from a `/buddyread` group
-
-> Genres come from the Google Books API and are saved per book when you add it via `/search`. Older books without genre data need to be re-added to unlock genre achievements.
 
 ## License
 
