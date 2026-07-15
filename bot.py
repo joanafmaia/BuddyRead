@@ -745,14 +745,20 @@ class LibraryView(discord.ui.View):
         embed.set_footer(
             text=f"page {self.current_page + 1} of {self.total_pages} · happy reading 💕"
         )
-        featured_book_id = next((book.get("book_id") for book in page_books if book.get("book_id")), None)
+        featured_book_id = None
+        if self.section == "reading":
+            featured_book_id = next((book.get("book_id") for book in page_books if book.get("book_id")), None)
         return embed, featured_book_id
 
-    async def _edit_with_cover(self, interaction: discord.Interaction, embed, book_id):
-        if book_id:
+    async def apply_library_cover(self, embed, book_id):
+        if self.section == "reading" and book_id:
             cover = await fetch_book_thumbnail(book_id)
-            if cover:
-                embed.set_image(url=cover)
+            embed.set_image(url=cover if cover else None)
+        else:
+            embed.set_image(url=None)
+
+    async def _edit_with_cover(self, interaction: discord.Interaction, embed, book_id):
+        await self.apply_library_cover(embed, book_id)
         await interaction.response.edit_message(embed=embed, view=self)
 
     @discord.ui.button(label="Back", emoji="🩷", style=discord.ButtonStyle.secondary, row=1)
@@ -788,10 +794,7 @@ class LibrarySectionSelect(discord.ui.Select):
         self.library_view.current_page = 0
         self.library_view._refresh_items()
         embed, book_id = self.library_view.get_embed()
-        if book_id:
-            cover = await fetch_book_thumbnail(book_id)
-            if cover:
-                embed.set_image(url=cover)
+        await self.library_view.apply_library_cover(embed, book_id)
         await interaction.response.edit_message(embed=embed, view=self.library_view)
 
 
@@ -1742,10 +1745,7 @@ async def library(interaction: discord.Interaction, member: discord.Member = Non
     bookshelf = user_profile["bookshelf"]
     view = LibraryView(target_user.display_name, bookshelf)
     embed, book_id = view.get_embed()
-    if book_id:
-        cover = await fetch_book_thumbnail(book_id)
-        if cover:
-            embed.set_image(url=cover)
+    await view.apply_library_cover(embed, book_id)
     await interaction.response.send_message(embed=embed, view=view)
 
 @bot.tree.command(name="leaderboard", description="See the top readers in this server")
