@@ -1145,75 +1145,47 @@ class LibraryEditModal(discord.ui.Modal, title="Edit book details"):
         )
 
 
-# 4. RATINGS & REVIEWS
-class RateModal(discord.ui.Modal, title="Rate Your Read 💕"):
-    review_text = discord.ui.TextInput(
-        label="Share your thoughts (optional)",
-        style=discord.TextStyle.paragraph,
-        placeholder="What did you love? What would you tell a friend...",
-        required=False,
-        max_length=500
-    )
-
-    def __init__(self, book_id, title, rating, source_message=None):
-        super().__init__()
-        self.book_id = book_id
-        self.title = title
-        self.rating = rating
-        self.source_message = source_message
-
-    async def on_submit(self, interaction: discord.Interaction):
-        try:
-            user_id = str(interaction.user.id)
-            user_profile = await users_col.find_one({"_id": user_id})
-            
-            if user_profile:
-                bookshelf = user_profile["bookshelf"]
-                for book in bookshelf:
-                    if book["book_id"] == self.book_id:
-                        book["status"] = "completed"
-                        book["rating"] = int(self.rating)
-                        book["review"] = self.review_text.value
-                        break
-                
-                history = user_profile.get("history", [])
-                history.append(f"🏆 Finished and rated **{self.title}** with {self.rating} stars on {datetime.now().strftime('%d/%m/%Y')}")
-                
-                await users_col.update_one({"_id": user_id}, {"$set": {"bookshelf": bookshelf, "history": history}})
-            
-            stars = cozy_stars(self.rating, "")
-            await interaction.response.send_message(
-                f"✨ Saved! You rated **{self.title}** {stars}",
-                ephemeral=True,
-            )
-            if self.source_message:
-                try:
-                    await self.source_message.edit(view=None)
-                except (discord.HTTPException, discord.NotFound):
-                    pass
-        except Exception:
-            await interaction.response.send_message("🌷 Something went wrong saving your review.", ephemeral=True)
-
+# 4. RATINGS
 class RatingDropdown(discord.ui.Select):
     def __init__(self, book_id, title, owner_id=None):
         self.book_id = book_id
         self.title = title
         self.owner_id = str(owner_id) if owner_id else None
         options = [
-            discord.SelectOption(label="💛💛💛💛💛 absolute masterpiece", value="5"),
-            discord.SelectOption(label="💛💛💛💛 really loved it", value="4"),
-            discord.SelectOption(label="💛💛💛 it was okay", value="3"),
-            discord.SelectOption(label="💛💛 not for me", value="2"),
-            discord.SelectOption(label="💛 didn't enjoy it", value="1"),
+            discord.SelectOption(label="💛💛💛💛💛", value="5"),
+            discord.SelectOption(label="💛💛💛💛", value="4"),
+            discord.SelectOption(label="💛💛💛", value="3"),
+            discord.SelectOption(label="💛💛", value="2"),
+            discord.SelectOption(label="💛", value="1"),
         ]
-        super().__init__(placeholder="How much did you love it? 💕", options=options)
+        super().__init__(placeholder="Rate with stars", options=options)
 
     async def callback(self, interaction: discord.Interaction):
         if self.owner_id and str(interaction.user.id) != self.owner_id:
             await interaction.response.send_message("🌷 This rating is for someone else.", ephemeral=True)
             return
-        await interaction.response.send_modal(
-            RateModal(self.book_id, self.title, self.values[0], source_message=interaction.message)
+        rating = int(self.values[0])
+        book, result = await apply_book_edits(interaction.user.id, self.book_id, rating=rating)
+        if not book:
+            await interaction.response.send_message(
+                "🌷 Couldn't save that rating — try again from `/library`.",
+                ephemeral=True,
+            )
+            return
+        user_profile = await users_col.find_one({"_id": str(interaction.user.id)})
+        if user_profile:
+            history = user_profile.get("history", [])
+            history.append(
+                f"🏆 Rated **{self.title}** {rating}/5 on {datetime.now().strftime('%d/%m/%Y')}"
+            )
+            await users_col.update_one(
+                {"_id": str(interaction.user.id)}, {"$set": {"history": history}}
+            )
+        stars = cozy_stars(rating, "")
+        await interaction.response.edit_message(
+            content=f"✨ Saved — **{self.title}** {stars}",
+            embed=None,
+            view=None,
         )
 
 class RatingView(discord.ui.View):
@@ -1305,7 +1277,7 @@ class BookshelfButtons(discord.ui.View):
         posted = False
         if interaction.channel is not None:
             try:
-                await interaction.channel.send(embed=embed, view=rating_view)
+                await interaction.channel.send(embed=embed)
                 posted = True
             except discord.HTTPException as e:
                 print(f"shelf confirmation send error: {e}")
@@ -1314,9 +1286,18 @@ class BookshelfButtons(discord.ui.View):
                 await interaction.delete_original_response()
             except (discord.HTTPException, discord.NotFound):
                 pass
+            if rating_view:
+                await interaction.followup.send(
+                    f"✨ Rate **{self.title}** with stars — only you can see this.",
+                    view=rating_view,
+                    ephemeral=True,
+                )
             return
 
-        await interaction.edit_original_response(embed=embed, view=rating_view)
+        await interaction.edit_original_response(
+            embed=embed,
+            view=rating_view,
+        )
 
     @discord.ui.button(label="Wishlist", style=discord.ButtonStyle.blurple, emoji="💌")
     async def to_read(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -1938,7 +1919,7 @@ async def progress(
                 await announce_book_finished(bot, interaction.user, current_book, completed_books, user_id)
             view = RatingView(current_book["book_id"], current_book["title"], owner_id=user_id)
             await interaction.followup.send(
-                f"✨ You finished *{current_book['title']}*! Rate it below 💕",
+                f"✨ Rate **{current_book['title']}** with stars — only you can see this.",
                 view=view,
                 ephemeral=True,
             )
@@ -2000,7 +1981,7 @@ async def progress(
             await announce_book_finished(bot, interaction.user, current_book, completed_books, user_id)
         view = RatingView(current_book["book_id"], current_book["title"], owner_id=user_id)
         await interaction.followup.send(
-            f"✨ You finished *{current_book['title']}*! Rate it below 💕",
+            f"✨ Rate **{current_book['title']}** with stars — only you can see this.",
             view=view,
             ephemeral=True,
         )
