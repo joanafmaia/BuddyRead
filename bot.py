@@ -99,12 +99,15 @@ def activity_fields(profile, now=None):
         "last_read": now,
         "streak": compute_streak(profile.get("last_read"), profile.get("streak"), now),
     }
-DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
-MONGO_URI = os.getenv("MONGO_URI")
-GOOGLE_BOOKS_KEY = os.getenv("GOOGLE_BOOKS_KEY")
-GUILD_ID = os.getenv("GUILD_ID")
-ANNOUNCE_CHANNEL_ID = os.getenv("ANNOUNCE_CHANNEL_ID", "1517151054246973611")
-BOOKCLUB_CHANNEL_ID = os.getenv("BOOKCLUB_CHANNEL_ID")
+DISCORD_TOKEN = (os.getenv("DISCORD_TOKEN") or "").strip()
+MONGO_URI = (os.getenv("MONGO_URI") or "").strip()
+GOOGLE_BOOKS_KEY = (os.getenv("GOOGLE_BOOKS_KEY") or "").strip().strip('"').strip("'")
+GUILD_ID = (os.getenv("GUILD_ID") or "").strip() or None
+ANNOUNCE_CHANNEL_ID = (os.getenv("ANNOUNCE_CHANNEL_ID") or "1517151054246973611").strip()
+BOOKCLUB_CHANNEL_ID = (os.getenv("BOOKCLUB_CHANNEL_ID") or "").strip() or None
+
+if GOOGLE_BOOKS_KEY.lower() in {"your_google_books_api_key_here", "changeme", "none"}:
+    GOOGLE_BOOKS_KEY = ""
 
 if not all([DISCORD_TOKEN, MONGO_URI, GOOGLE_BOOKS_KEY]):
     raise RuntimeError(
@@ -238,6 +241,35 @@ async def fetch_book_thumbnail(book_id):
         pass
     _thumbnail_cache[book_id] = ""
     return ""
+
+
+def google_books_failure_message(status, payload):
+    error = (payload or {}).get("error") or {}
+    reason = ""
+    if isinstance(error, dict):
+        reason = (error.get("message") or "").lower()
+        details = error.get("errors") or []
+        if details and isinstance(details, list) and isinstance(details[0], dict):
+            reason = (details[0].get("reason") or reason).lower()
+
+    if status in (401, 403):
+        if "not been used" in reason or "disabled" in reason or "access not configured" in reason:
+            return (
+                "🌷 Google Books API is not enabled for this key's project. "
+                "In Google Cloud → APIs & Services → Library, enable **Books API**."
+            )
+        if "referer" in reason or "blocked" in reason:
+            return (
+                "🌷 The API key is blocked by restrictions. "
+                "Edit the key → Application restrictions → **None** (this bot is not a website)."
+            )
+        return (
+            "🌷 Google rejected the API key. On Render, set `GOOGLE_BOOKS_KEY` to the new key "
+            "and confirm Books API is enabled. Don't restrict the key to HTTP websites."
+        )
+    if status == 429:
+        return "🌷 Google Books quota is exhausted for today. Try again tomorrow, or request a higher quota."
+    return f"🌷 Couldn't reach the book API right now (HTTP {status}). Try again soon!"
 
 
 def build_book_embed(volume_info):
@@ -1787,10 +1819,12 @@ async def search(interaction: discord.Interaction, title: str, author: str = Non
     try:
         session = await get_http_session()
         async with session.get(api_url, params=params) as response:
+            payload = await response.json(content_type=None)
             if response.status != 200:
-                await interaction.followup.send("🌷 Couldn't reach the book API right now — try again soon!")
+                print(f"Google Books search failed: HTTP {response.status} {payload}")
+                await interaction.followup.send(google_books_failure_message(response.status, payload))
                 return
-            data = await response.json()
+            data = payload
             if "items" not in data:
                 await interaction.followup.send("🌷 No books found with that title — try another search!")
                 return
@@ -1812,7 +1846,8 @@ async def search(interaction: discord.Interaction, title: str, author: str = Non
                 await interaction.followup.send(
                     embed=embed, view=SearchResultsView(items, title)
                 )
-    except Exception:
+    except Exception as e:
+        print(f"Google Books search error: {e}")
         await interaction.followup.send("🌷 Something went wrong while searching — please try again.")
 
 
