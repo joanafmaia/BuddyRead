@@ -1689,14 +1689,14 @@ async def on_ready():
     _commands_synced = True
 
     try:
-        synced = await bot.tree.sync()
-        print(f"✅ Synced {len(synced)} commands globally (DMs + servers).")
-
         if GUILD_ID:
             guild = discord.Object(id=int(GUILD_ID))
-            bot.tree.clear_commands(guild=guild)
-            await bot.tree.sync(guild=guild)
-            print(f"✅ Cleared guild-only duplicates for server {GUILD_ID}.")
+            bot.tree.copy_global_to(guild=guild)
+            guild_synced = await bot.tree.sync(guild=guild)
+            print(f"✅ Synced {len(guild_synced)} commands instantly for server {GUILD_ID}.")
+
+        synced = await bot.tree.sync()
+        print(f"✅ Synced {len(synced)} commands globally (DMs + other servers).")
     except Exception as e:
         print(f"❌ Erro na sincronização: {e}")
 
