@@ -1,4 +1,5 @@
 import os
+import re
 import asyncio
 import discord
 import certifi
@@ -19,7 +20,8 @@ intents.message_content = True
 
 class BookBot(commands.Bot):
     async def setup_hook(self):
-        self.add_view(BuddyJoinView())
+        self.add_view(LegacyBuddyJoinView())
+        self.add_dynamic_items(BuddyJoinButton)
         if not weekly_club_pulse.is_running():
             weekly_club_pulse.start()
 
@@ -103,8 +105,9 @@ DISCORD_TOKEN = (os.getenv("DISCORD_TOKEN") or "").strip()
 MONGO_URI = (os.getenv("MONGO_URI") or "").strip()
 GOOGLE_BOOKS_KEY = (os.getenv("GOOGLE_BOOKS_KEY") or "").strip().strip('"').strip("'")
 GUILD_ID = (os.getenv("GUILD_ID") or "").strip() or None
-ANNOUNCE_CHANNEL_ID = (os.getenv("ANNOUNCE_CHANNEL_ID") or "1517151054246973611").strip()
+ANNOUNCE_CHANNEL_ID = (os.getenv("ANNOUNCE_CHANNEL_ID") or "").strip()
 BOOKCLUB_CHANNEL_ID = (os.getenv("BOOKCLUB_CHANNEL_ID") or "").strip() or None
+HISTORY_MAX_ENTRIES = 100
 
 if GOOGLE_BOOKS_KEY.lower() in {"your_google_books_api_key_here", "changeme", "none"}:
     GOOGLE_BOOKS_KEY = ""
@@ -157,18 +160,12 @@ def progress_bar(current, total, length=8):
     return "💗" * filled + "🤍" * (length - filled)
 
 
-def format_reading_book(book):
-    total = book.get("total_pages", 0) or 0
-    current = book.get("current_page", 0) or 0
-    bar = progress_bar(current, total)
-    pct = round((current / total) * 100) if total > 0 else 0
-    return f"💭 **{book['title']}**\n`{bar}` **{pct}%** · page {current}/{total if total > 0 else '?'}"
-
-
-def format_completed_book(book):
-    rating = cozy_stars(book.get("rating"), "No rating")
-    year_bit = f", {book['completed_year']}" if book.get("completed_year") else ""
-    return f"✨ **{book['title']}** ({rating}{year_bit})"
+def trim_history(history):
+    if not history:
+        return []
+    if len(history) <= HISTORY_MAX_ENTRIES:
+        return history
+    return history[-HISTORY_MAX_ENTRIES:]
 
 
 def average_rating(completed_books):
@@ -335,7 +332,7 @@ def current_year():
 
 
 def get_book_completed_year(book):
-    return book.get("completed_year") or current_year()
+    return book.get("completed_year")
 
 
 def books_completed_in_year(bookshelf, year=None):
@@ -348,6 +345,18 @@ def books_completed_in_year(bookshelf, year=None):
 
 def is_current_year_finish(book):
     return get_book_completed_year(book) == current_year()
+
+
+def active_yearly_goal(user_profile):
+    goal = user_profile.get("yearly_goal", 0) or 0
+    goal_year = user_profile.get("goal_year")
+    if goal <= 0:
+        return 0, current_year()
+    if goal_year is None:
+        return goal, current_year()
+    if goal_year != current_year():
+        return 0, current_year()
+    return goal, goal_year
 
 
 GENRE_ACHIEVEMENTS = [
@@ -595,11 +604,19 @@ async def get_configured_channel(bot_client, channel_id_value):
     return None
 
 
-def build_bookclub_invite_embed(host_name, book_title, reminder=False, member_count=1, group_id=None):
-    title = "🔔 Book Club Reminder" if reminder else "👯‍♀️ Book of the Month"
+def build_bookclub_invite_embed(host_name, book_title, reminder=False, member_count=1, group_id=None, kind="month"):
+    if reminder:
+        title = "🔔 Book Club Reminder"
+        blurb = "Jump back into this cozy group read 💕"
+    elif kind == "casual":
+        title = "👯‍♀️ Group Read"
+        blurb = f"**{host_name}** started a group read — join below 💕"
+    else:
+        title = "👯‍♀️ Book of the Month"
+        blurb = "Join this month's cozy group read 💕"
     description = (
         f"**{book_title}**\n"
-        f"Join this month's cozy group read 💕\n"
+        f"{blurb}\n"
         f"👯 **{member_count}** reader{'s' if member_count != 1 else ''} joined so far"
     )
     embed = discord.Embed(title=title, description=description, color=COLORS["social"])
@@ -618,11 +635,12 @@ async def post_bookclub_invite(bot_client, group, reminder=False):
         group["host_name"], group["book_title"], reminder=reminder,
         member_count=len(group.get("members", [])),
         group_id=group["_id"],
+        kind=group.get("kind", "month"),
     )
     thumbnail = group.get("thumbnail_url") or await fetch_book_thumbnail(group.get("book_id"))
     if thumbnail:
         embed.set_thumbnail(url=thumbnail)
-    await channel.send(embed=embed, view=BuddyJoinView())
+    await channel.send(embed=embed, view=BuddyJoinView(group["_id"]))
     return True
 
 
@@ -660,6 +678,10 @@ async def hydrate_legacy_bookclub_group(group):
     updates = {}
     if matched_book.get("book_id") and not group.get("book_id"):
         updates["book_id"] = matched_book.get("book_id")
+    if matched_book.get("author") and not group.get("author"):
+        updates["author"] = matched_book.get("author")
+    if matched_book.get("total_pages") and not group.get("total_pages"):
+        updates["total_pages"] = matched_book.get("total_pages")
     if updates.get("book_id") or group.get("book_id"):
         thumbnail = await fetch_book_thumbnail(updates.get("book_id") or group.get("book_id"))
         if thumbnail and not group.get("thumbnail_url"):
@@ -786,6 +808,8 @@ def format_library_card(book):
     title = book.get("title", "Unknown Title")
     status = book.get("status", "to_read")
     icon = LIBRARY_STATUS_ICONS.get(status, "📕")
+    author = book.get("author") or ""
+    author_bit = f" · *{author[:40]}*" if author else ""
 
     if status == "reading":
         total = book.get("total_pages", 0) or 0
@@ -807,7 +831,7 @@ def format_library_card(book):
         pages = book.get("total_pages", 0) or 0
         detail = f"on the wishlist · {pages} pages" if pages > 0 else "waiting on the wishlist"
 
-    return f"{icon} {title[:70]}", detail
+    return f"{icon} {title[:60]}{author_bit}", detail
 
 
 class LibraryView(discord.ui.View):
@@ -1013,6 +1037,48 @@ class LibraryManageBookSelect(discord.ui.Select):
         await interaction.response.edit_message(embed=embed, view=self.library_view)
 
 
+class RemoveBookConfirmView(discord.ui.View):
+    def __init__(self, user_id, identifier, title, library_view=None, source_message=None):
+        super().__init__(timeout=60)
+        self.user_id = str(user_id)
+        self.identifier = identifier
+        self.title = title
+        self.library_view = library_view
+        self.source_message = source_message
+
+    @discord.ui.button(label="Yes, remove", style=discord.ButtonStyle.danger, emoji="🗑️")
+    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if str(interaction.user.id) != self.user_id:
+            await interaction.response.send_message("🌷 Only you can confirm this.", ephemeral=True)
+            return
+        removed = await remove_shelf_book(self.user_id, self.identifier)
+        for child in self.children:
+            child.disabled = True
+        await interaction.response.edit_message(
+            content=f"🌷 Removed **{removed or self.title}** from your library.",
+            view=self,
+        )
+        if self.library_view is not None:
+            self.library_view.selected_key = None
+            await self.library_view.reload_from_db()
+            embed, book_id = self.library_view.get_embed()
+            await self.library_view.apply_library_cover(embed, book_id)
+            if self.source_message:
+                try:
+                    await self.source_message.edit(embed=embed, view=self.library_view)
+                except (discord.HTTPException, discord.NotFound):
+                    pass
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if str(interaction.user.id) != self.user_id:
+            await interaction.response.send_message("🌷 Only you can cancel this.", ephemeral=True)
+            return
+        for child in self.children:
+            child.disabled = True
+        await interaction.response.edit_message(content="✅ Kept on your shelf.", view=self)
+
+
 class LibraryManageActionSelect(discord.ui.Select):
     def __init__(self, library_view):
         self.library_view = library_view
@@ -1051,14 +1117,17 @@ class LibraryManageActionSelect(discord.ui.Select):
             return
 
         if action == "remove":
-            removed = await remove_shelf_book(view.owner_id, view.selected_key)
-            view.selected_key = None
-            await view.reload_from_db()
-            embed, book_id = view.get_embed()
-            await view.apply_library_cover(embed, book_id)
-            await interaction.response.edit_message(embed=embed, view=view)
-            if removed:
-                await interaction.followup.send(f"🌷 Removed **{removed}**.", ephemeral=True)
+            book = find_shelf_book(view.bookshelf, view.selected_key)
+            title = book["title"] if book else "this book"
+            confirm = RemoveBookConfirmView(
+                view.owner_id, view.selected_key, title,
+                library_view=view, source_message=interaction.message,
+            )
+            await interaction.response.send_message(
+                f"🗑️ Remove **{title}** from your library?",
+                view=confirm,
+                ephemeral=True,
+            )
             return
 
         book, updates = await apply_book_edits(view.owner_id, view.selected_key, status=action)
@@ -1071,6 +1140,23 @@ class LibraryManageActionSelect(discord.ui.Select):
                 f"✨ Updated **{book['title']}**: {', '.join(updates)}",
                 ephemeral=True,
             )
+            if action == "completed":
+                user_id = view.owner_id
+                user_profile = await users_col.find_one({"_id": user_id})
+                if user_profile and is_current_year_finish(book):
+                    await mark_buddy_read_finish(user_id, book)
+                    await users_col.update_one(
+                        {"_id": user_id},
+                        {"$set": {"bookshelf": user_profile["bookshelf"]}},
+                    )
+                    completed_books = [b for b in user_profile["bookshelf"] if b["status"] == "completed"]
+                    await announce_book_finished(bot, interaction.user, book, completed_books, user_id)
+                rating_view = RatingView(book.get("book_id") or view.selected_key, book["title"], owner_id=user_id)
+                await interaction.followup.send(
+                    f"✨ Rate **{book['title']}** with stars — only you can see this.",
+                    view=rating_view,
+                    ephemeral=True,
+                )
 
 
 class LibraryEditModal(discord.ui.Modal, title="Edit book details"):
@@ -1179,7 +1265,7 @@ class RatingDropdown(discord.ui.Select):
                 f"🏆 Rated **{self.title}** {rating}/5 on {datetime.now().strftime('%d/%m/%Y')}"
             )
             await users_col.update_one(
-                {"_id": str(interaction.user.id)}, {"$set": {"history": history}}
+                {"_id": str(interaction.user.id)}, {"$set": {"history": trim_history(history)}}
             )
         stars = cozy_stars(rating, "")
         await interaction.response.edit_message(
@@ -1196,7 +1282,7 @@ class RatingView(discord.ui.View):
 
 # 5. BOOKSHELF CORE BUTTONS
 class BookshelfButtons(discord.ui.View):
-    def __init__(self, book_id, title, total_pages, categories=None, search_items=None, search_query=""):
+    def __init__(self, book_id, title, total_pages, categories=None, search_items=None, search_query="", author=""):
         super().__init__(timeout=180)
         self.book_id = book_id
         self.title = title
@@ -1207,6 +1293,7 @@ class BookshelfButtons(discord.ui.View):
         self.read_year = current_year()
         self.search_items = search_items or []
         self.search_query = search_query
+        self.author = author or ""
         for child in self.children:
             if isinstance(child, discord.ui.Button) and child.label == "Back" and not self.search_items:
                 child.label = "Cancel"
@@ -1214,7 +1301,10 @@ class BookshelfButtons(discord.ui.View):
     async def update_bookshelf(self, user_id, username, status):
         user_profile = await users_col.find_one({"_id": str(user_id)})
         if not user_profile:
-            user_profile = {"_id": str(user_id), "username": username, "yearly_goal": 0, "bookshelf": [], "history": [], "last_read": datetime.now()}
+            user_profile = {
+                "_id": str(user_id), "username": username, "yearly_goal": 0,
+                "goal_year": current_year(), "bookshelf": [], "history": [], "last_read": datetime.now(),
+            }
             await users_col.insert_one(user_profile)
 
         bookshelf = user_profile.get("bookshelf", [])
@@ -1228,6 +1318,8 @@ class BookshelfButtons(discord.ui.View):
                     book["categories"] = self.categories
                     book["genres"] = self.genres
                     book["subgenres"] = self.subgenres
+                if self.author and not book.get("author"):
+                    book["author"] = self.author
                 if status == "completed":
                     stamp_completed(book, self.read_year)
                 book_exists = True
@@ -1237,6 +1329,7 @@ class BookshelfButtons(discord.ui.View):
             new_book = {
                 "book_id": self.book_id, "title": self.title, "status": status,
                 "current_page": 0, "total_pages": self.total_pages, "rating": None, "review": None,
+                "author": self.author,
                 "categories": self.categories, "genres": self.genres, "subgenres": self.subgenres,
             }
             if status == "completed":
@@ -1248,7 +1341,7 @@ class BookshelfButtons(discord.ui.View):
 
         await users_col.update_one(
             {"_id": str(user_id)},
-            {"$set": {"bookshelf": bookshelf, "history": history, **activity_fields(user_profile)}},
+            {"$set": {"bookshelf": bookshelf, "history": trim_history(history), **activity_fields(user_profile)}},
         )
 
     async def _apply_status(self, interaction: discord.Interaction, status):
@@ -1351,12 +1444,13 @@ class SearchResultSelect(discord.ui.Select):
             book_title = volume_info.get("title", "Unknown Title")
             pages = volume_info.get("pageCount", 0)
             categories = volume_info.get("categories", [])
+            authors = ", ".join(volume_info.get("authors", []))
             embed = build_book_embed(volume_info)
             await interaction.response.edit_message(
                 embed=embed,
                 view=BookshelfButtons(
                     book_id, book_title, pages, categories,
-                    search_items=self.items, search_query=self.query,
+                    search_items=self.items, search_query=self.query, author=authors,
                 ),
             )
         except Exception as e:
@@ -1395,7 +1489,30 @@ def group_id_from_message(message):
     return None
 
 
-class BuddyJoinView(discord.ui.View):
+class BuddyJoinButton(discord.ui.DynamicItem[discord.ui.Button], template=r"buddyread:join:(?P<match_id>.+)"):
+    def __init__(self, match_id: str):
+        super().__init__(
+            discord.ui.Button(
+                label="Join Book Club",
+                style=discord.ButtonStyle.success,
+                emoji="💕",
+                custom_id=f"buddyread:join:{match_id}",
+            )
+        )
+        self.match_id = match_id
+
+    @classmethod
+    async def from_custom_id(cls, interaction: discord.Interaction, item: discord.ui.Button, match: re.Match[str], /):
+        return cls(match["match_id"])
+
+    async def callback(self, interaction: discord.Interaction):
+        message, ephemeral = await join_buddy_group(self.match_id, interaction.user)
+        await interaction.response.send_message(message, ephemeral=ephemeral)
+
+
+class LegacyBuddyJoinView(discord.ui.View):
+    """Persistent view for older invites that used a fixed custom_id + footer id."""
+
     def __init__(self):
         super().__init__(timeout=None)
 
@@ -1412,6 +1529,12 @@ class BuddyJoinView(discord.ui.View):
             return
         message, ephemeral = await join_buddy_group(match_id, interaction.user)
         await interaction.response.send_message(message, ephemeral=ephemeral)
+
+
+class BuddyJoinView(discord.ui.View):
+    def __init__(self, match_id):
+        super().__init__(timeout=None)
+        self.add_item(BuddyJoinButton(match_id))
 
 
 # 7. AUTOCOMPLETE FUNCTIONS
@@ -1579,6 +1702,7 @@ async def ensure_group_book_on_shelf(user, group):
             "_id": user_id,
             "username": user.name,
             "yearly_goal": 0,
+            "goal_year": current_year(),
             "bookshelf": [],
             "history": [],
             "last_read": now,
@@ -1595,20 +1719,22 @@ async def ensure_group_book_on_shelf(user, group):
             history.append(f"💭 Started **{existing['title']}** with the book club")
             await users_col.update_one(
                 {"_id": user_id},
-                {"$set": {"bookshelf": bookshelf, "history": history, **activity_fields(user_profile, now)}},
+                {"$set": {"bookshelf": bookshelf, "history": trim_history(history), **activity_fields(user_profile, now)}},
             )
         return existing.get("title")
 
     title = group.get("book_title", "Unknown Title")
     book_id = group.get("book_id") or title
-    total_pages = 0
+    total_pages = group.get("total_pages", 0) or 0
+    author = group.get("author") or ""
     host = await users_col.find_one({"_id": group.get("host_id")}) if group.get("host_id") else None
     if host:
         host_book = find_group_book(host.get("bookshelf", []), group)
         if host_book:
-            total_pages = host_book.get("total_pages", 0) or 0
+            total_pages = total_pages or host_book.get("total_pages", 0) or 0
             book_id = host_book.get("book_id") or book_id
             title = host_book.get("title") or title
+            author = author or host_book.get("author") or ""
 
     bookshelf.append({
         "book_id": book_id,
@@ -1618,6 +1744,7 @@ async def ensure_group_book_on_shelf(user, group):
         "total_pages": total_pages,
         "rating": None,
         "review": None,
+        "author": author,
         "categories": [],
         "genres": [],
         "subgenres": [],
@@ -1625,7 +1752,7 @@ async def ensure_group_book_on_shelf(user, group):
     history.append(f"👯‍♀️ Joined the book club for **{title}**")
     await users_col.update_one(
         {"_id": user_id},
-        {"$set": {"bookshelf": bookshelf, "history": history, **activity_fields(user_profile, now)}},
+        {"$set": {"bookshelf": bookshelf, "history": trim_history(history), **activity_fields(user_profile, now)}},
     )
     return title
 
@@ -1729,8 +1856,7 @@ async def help_command(interaction: discord.Interaction, mode: app_commands.Choi
         embed = discord.Embed(
             title="🎀 BuddyRead — Quick Start",
             description=(
-                "Your cozy corner for tracking reads, book club & cute stats ✨\n"
-                "**Note:** `/buddyread` was renamed to `/bookclub`."
+                "Your cozy corner for tracking reads, book club & cute stats ✨"
             ),
             color=COLORS["reading"],
         )
@@ -1755,8 +1881,7 @@ async def help_command(interaction: discord.Interaction, mode: app_commands.Choi
         title="🎀 BuddyRead — Command Guide",
         description=(
             "Use commands in **server channels** or **DMs** ✨\n"
-            "Finishing a book this year posts a celebration in the reading channel 💕\n"
-            "**Note:** `/buddyread` was renamed to `/bookclub`."
+            "Finishing a book this year posts a celebration in the reading channel 💕"
         ),
         color=COLORS["reading"],
     )
@@ -1817,10 +1942,11 @@ async def search(interaction: discord.Interaction, title: str, author: str = Non
                 book_title = volume_info.get("title", "Unknown Title")
                 pages = volume_info.get("pageCount", 0)
                 categories = volume_info.get("categories", [])
+                authors = ", ".join(volume_info.get("authors", []))
                 embed = build_book_embed(volume_info)
                 await interaction.followup.send(
                     embed=embed,
-                    view=BookshelfButtons(book_id, book_title, pages, categories),
+                    view=BookshelfButtons(book_id, book_title, pages, categories, author=authors),
                 )
             else:
                 embed = build_search_results_embed(items, title)
@@ -1843,7 +1969,7 @@ async def search(interaction: discord.Interaction, title: str, author: str = Non
 @app_commands.choices(status=[
     app_commands.Choice(name="In Progress", value="reading"),
     app_commands.Choice(name="Finished", value="completed"),
-    app_commands.Choice(name="Abandoned", value="abandoned"),
+    app_commands.Choice(name="Paused", value="abandoned"),
 ])
 async def progress(
     interaction: discord.Interaction,
@@ -1911,7 +2037,7 @@ async def progress(
                 await mark_buddy_read_finish(user_id, current_book)
             await users_col.update_one(
                 {"_id": user_id},
-                {"$set": {"bookshelf": user_profile["bookshelf"], "history": history, **activity_fields(user_profile, now)}},
+                {"$set": {"bookshelf": user_profile["bookshelf"], "history": trim_history(history), **activity_fields(user_profile, now)}},
             )
             await announce_club_progress(interaction, current_book, 100, page, total_pages)
             if is_current_year_finish(current_book):
@@ -1926,7 +2052,7 @@ async def progress(
         else:
             await users_col.update_one(
                 {"_id": user_id},
-                {"$set": {"bookshelf": user_profile["bookshelf"], "history": history, **activity_fields(user_profile, now)}},
+                {"$set": {"bookshelf": user_profile["bookshelf"], "history": trim_history(history), **activity_fields(user_profile, now)}},
             )
             progress_bar_display = progress_bar(page, total_pages)
             await interaction.response.send_message(
@@ -1968,7 +2094,7 @@ async def progress(
 
         await users_col.update_one(
             {"_id": user_id},
-            {"$set": {"bookshelf": user_profile["bookshelf"], "history": history, **activity_fields(user_profile, now)}},
+            {"$set": {"bookshelf": user_profile["bookshelf"], "history": trim_history(history), **activity_fields(user_profile, now)}},
         )
         if status_value == "completed":
             total = current_book.get("total_pages", 0) or 0
@@ -1988,7 +2114,7 @@ async def progress(
     else:
         await users_col.update_one(
             {"_id": user_id},
-            {"$set": {"bookshelf": user_profile["bookshelf"], "history": history, **activity_fields(user_profile, now)}},
+            {"$set": {"bookshelf": user_profile["bookshelf"], "history": trim_history(history), **activity_fields(user_profile, now)}},
         )
         await interaction.response.send_message(f"{label} — **{current_book['title']}** updated!", ephemeral=True)
 
@@ -2021,9 +2147,9 @@ async def profile(interaction: discord.Interaction, member: discord.Member = Non
     apply_cozy_style(embed)
     embed.set_thumbnail(url=target_user.display_avatar.url)
 
-    goal = user_profile.get("yearly_goal", 0)
+    goal, challenge_year = active_yearly_goal(user_profile)
     if goal > 0:
-        challenge_year = current_year()
+        year_completed = books_completed_in_year(bookshelf, challenge_year)
         percent = min(round((len(year_completed) / goal) * 100), 100)
         bar = progress_bar(len(year_completed), goal)
         embed.add_field(
@@ -2074,7 +2200,15 @@ async def profile(interaction: discord.Interaction, member: discord.Member = Non
     if completed:
         last = max(completed, key=book_completed_sort_key)
         stars = cozy_stars(last.get("rating"))
-        embed.add_field(name="🌷 Latest Finish", value=f"**{last['title']}** · {stars}", inline=False)
+        latest = f"**{last['title']}** · {stars}"
+        author = last.get("author")
+        if author:
+            latest += f" · *{author}*"
+        review = (last.get("review") or "").strip()
+        if review:
+            snippet = review[:80] + ("..." if len(review) > 80 else "")
+            latest += f"\n*{snippet}*"
+        embed.add_field(name="🌷 Latest Finish", value=latest, inline=False)
 
     reviewed = [b for b in completed if (b.get("review") or "").strip()]
     if reviewed:
@@ -2121,7 +2255,7 @@ class ChallengeModal(discord.ui.Modal, title="Yearly reading challenge"):
         year = current_year()
         await users_col.update_one(
             {"_id": str(interaction.user.id)},
-            {"$set": {"yearly_goal": goal, "username": interaction.user.name}},
+            {"$set": {"yearly_goal": goal, "goal_year": year, "username": interaction.user.name}},
             upsert=True,
         )
         await interaction.response.send_message(
@@ -2290,17 +2424,25 @@ async def buddy_create(interaction: discord.Interaction, book_title: str, of_the
 
     resolved_book_id = shelf_book.get("book_id") if shelf_book else None
     resolved_thumbnail = await fetch_book_thumbnail(resolved_book_id)
+    resolved_author = (shelf_book.get("author") if shelf_book else "") or ""
+    resolved_pages = (shelf_book.get("total_pages") if shelf_book else 0) or 0
     match_id = f"buddy_{interaction.user.id}_{int(datetime.now().timestamp())}"
+    kind = "month" if of_the_month else "casual"
     group_doc = {
         "_id": match_id,
         "book_title": resolved_title,
         "book_id": resolved_book_id,
         "thumbnail_url": resolved_thumbnail,
+        "author": resolved_author,
+        "total_pages": resolved_pages,
+        "kind": kind,
+        "guild_id": str(interaction.guild_id) if interaction.guild_id else None,
         "host_id": str(interaction.user.id),
         "host_name": interaction.user.display_name,
         "members": [str(interaction.user.id)],
     }
     await buddies_col.insert_one(group_doc)
+    await ensure_group_book_on_shelf(interaction.user, group_doc)
 
     if of_the_month:
         posted = await post_bookclub_invite(bot, group_doc)
@@ -2317,11 +2459,11 @@ async def buddy_create(interaction: discord.Interaction, book_title: str, of_the
         return
 
     embed = build_bookclub_invite_embed(
-        interaction.user.display_name, resolved_title, group_id=match_id,
+        interaction.user.display_name, resolved_title, group_id=match_id, kind="casual",
     )
     if resolved_thumbnail:
         embed.set_thumbnail(url=resolved_thumbnail)
-    await interaction.response.send_message(embed=embed, view=BuddyJoinView())
+    await interaction.response.send_message(embed=embed, view=BuddyJoinView(match_id))
 
 @buddy_group.command(name="status", description="Check progress — join, repost, or delete from here")
 @app_commands.autocomplete(group_id=buddy_autocomplete)

@@ -5,45 +5,37 @@ A Discord bot for managing your reading life, personal library, and group reads.
 ## Features
 
 ### Personal library
-- Search books via the **Google Books API** (title or ISBN)
+- Search books via the **Google Books API** (title or ISBN) — search is private
 - Save books to your **wishlist** with `/search`
-- Browse your full catalog with `/library` (filters for reading, finished, wishlist, paused)
+- Browse your full catalog with `/library` (filters for reading, finished, wishlist, paused; edit/remove from the UI)
 - Update reading status: *Reading*, *Finished*, *Wishlist*, or *Paused*
 - Log page progress with heart progress bars
-- Optional rating when you finish a book
-- View reading activity with `/history`
+- Optional private star rating when you finish a book
+- View reading activity from your profile diary
 
 ### Profile & stats
 - Profile card with reading counters (yours or others')
-- Annual reading challenge (`/challenge`)
+- Annual reading challenge (button on `/profile`)
 - Unlockable achievement (badge) system
 - Server leaderboard (members of the current server only)
 
 ### Group reads (Book Club)
-- `/bookclub create` — start a group read (invite in chat)
-- `/bookclub month` — Book of the Month posted in the book club channel
-- Join with a button, compare progress with `/bookclub status`
+- `/bookclub create` — start a group read (invite in chat), or mark it as Book of the Month
+- Join with a button (adds the book to your shelf as *Reading* automatically)
+- Compare progress with `/bookclub status`
 
 ## Commands
 
 | Command | Description |
 |---------|-------------|
 | `/help` | List all available commands |
-| `/search` | Search for a book and add it to your library |
-| `/library` | Browse full catalog with filters and covers |
-| `/history` | View recent reading activity |
+| `/search` | Private search; add a book to your library |
+| `/library` | Browse shelves; on yours, pick a book to edit or remove |
 | `/progress` | Log pages read or update reading status |
-| `/edit_book` | Edit rating, year, pages, or shelf status |
-| `/remove_book` | Remove a book from your library |
-| `/profile` | View profile, stats, and achievements |
-| `/challenge` | Set your yearly book goal |
+| `/profile` | View profile, stats, diary & challenge |
 | `/leaderboard` | Server reader rankings (this year or all time) |
-| `/bookclub create` | Start a group read in the current chat |
-| `/bookclub month` | Book of the Month in the book club channel |
-| `/bookclub join` | Join an existing group |
-| `/bookclub post` | Repost a group invite |
-| `/bookclub status` | View member progress in a group |
-| `/bookclub delete` | Delete a group you host |
+| `/bookclub create` | Start a group read (optionally Book of the Month) |
+| `/bookclub status` | View progress; join, repost, or delete |
 
 ## Tech stack
 
@@ -93,13 +85,10 @@ copy .env.example .env      # Windows
 | `MONGO_URI` | MongoDB connection string |
 | `GOOGLE_BOOKS_KEY` | Google Books API key |
 | `GUILD_ID` | (Optional) Discord server ID for instant command sync |
-| `ANNOUNCE_CHANNEL_ID` | Channel for book-finished celebrations |
+| `ANNOUNCE_CHANNEL_ID` | (Optional) Channel for book-finished celebrations |
 | `BOOKCLUB_CHANNEL_ID` | Channel for Book of the Month posts |
 
-3. In the [Discord Developer Portal](https://discord.com/developers/applications), enable the following **Privileged Gateway Intents** for your bot:
-- **Message Content Intent**
-
-4. Invite the bot to your server with permissions to send messages, use slash commands, and send embeds.
+3. Invite the bot to your server with permissions to send messages, use slash commands, and send embeds. **Message Content Intent is not required** for slash-command usage.
 
 > **Security note:** Never commit your `.env` file. It is listed in `.gitignore`.
 
@@ -122,7 +111,7 @@ On Render's free plan, use a **Web Service** (Background Workers are paid). The 
 3. Configure:
    - **Build Command:** `pip install -r requirements.txt`
    - **Start Command:** `python bot.py`
-4. Add environment variables: `DISCORD_TOKEN`, `MONGO_URI`, `GOOGLE_BOOKS_KEY`, and optionally `GUILD_ID`
+4. Add environment variables: `DISCORD_TOKEN`, `MONGO_URI`, `GOOGLE_BOOKS_KEY`, and optionally `GUILD_ID`, `ANNOUNCE_CHANNEL_ID`, `BOOKCLUB_CHANNEL_ID`
 5. Deploy and copy your service URL (e.g. `https://buddyread.onrender.com`)
 
 ### Keep it awake with UptimeRobot
@@ -139,7 +128,7 @@ UptimeRobot pings `/health` every 5 minutes so Render does not spin down the ser
 
 - Stop any local instance of the bot (only one process can use the same Discord token)
 - In MongoDB Atlas → **Network Access**, allow `0.0.0.0/0`
-- Enable **Message Content Intent** in the Discord Developer Portal
+- Invite the bot with slash-command permissions (Message Content Intent not required)
 
 > Locally, the health server only starts when `PORT` is set — your `.env` does not need it.
 
