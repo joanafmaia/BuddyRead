@@ -2199,75 +2199,59 @@ async def profile(interaction: discord.Interaction, member: discord.Member = Non
     avg = average_rating(completed)
     top_genre = favorite_genre(completed)
 
-    summary_bits = [
-        f"💭 **{len(reading)}** reading",
-        f"✨ **{len(completed)}** finished",
-        f"💌 **{len(to_read)}** wishlist",
+    # Keep everything in description — Discord mobile stacks fields and makes profiles huge.
+    lines = [
+        COZY_DIVIDER,
+        f"💭 **{len(reading)}** · ✨ **{len(completed)}** · 💌 **{len(to_read)}**",
     ]
+
     extras = []
     if streak:
-        extras.append(f"🔥 **{streak}**-day streak")
+        extras.append(f"🔥 **{streak}**d")
     if avg:
-        extras.append(f"💛 **{avg}** avg")
+        extras.append(f"💛 **{avg}**")
     if top_genre:
-        extras.append(f"📂 **{top_genre}**")
+        extras.append(f"📂 {top_genre}")
     if year_completed:
         extras.append(f"🌸 **{len(year_completed)}** this year")
-
-    description = f"{COZY_DIVIDER}\n" + " · ".join(summary_bits)
     if extras:
-        description += "\n" + " · ".join(extras)
-
-    embed = discord.Embed(
-        title=f"🎀 {target_user.display_name}'s reading corner",
-        description=description,
-        color=COLORS["profile"],
-    )
-    apply_cozy_style(embed)
-    embed.set_thumbnail(url=target_user.display_avatar.url)
+        lines.append(" · ".join(extras))
 
     goal, challenge_year = active_yearly_goal(user_profile)
     if goal > 0:
         challenge_done = books_completed_in_year(bookshelf, challenge_year)
-        bar = progress_bar(len(challenge_done), goal, length=6)
-        percent = min(round((len(challenge_done) / goal) * 100), 100)
-        embed.add_field(
-            name=f"🏆 {challenge_year} Challenge",
-            value=f"`{bar}` **{len(challenge_done)}/{goal}** ({percent}%)",
-            inline=False,
-        )
+        bar = progress_bar(len(challenge_done), goal, length=5)
+        lines.append(f"🏆 **{challenge_year}** `{bar}` **{len(challenge_done)}/{goal}**")
 
     if reading:
-        reading_lines = []
-        for book in reading[:3]:
+        bits = []
+        for book in reading[:2]:
             total = book.get("total_pages", 0) or 0
             current_page = book.get("current_page", 0) or 0
             pct = round((current_page / total) * 100) if total > 0 else 0
-            bar = progress_bar(current_page, total, length=5)
-            reading_lines.append(f"**{book['title'][:36]}**\n`{bar}` {pct}%")
-        if len(reading) > 3:
-            reading_lines.append(f"*+{len(reading) - 3} more on the nightstand*")
-        embed.add_field(name="💭 Currently reading", value="\n".join(reading_lines), inline=False)
+            bits.append(f"**{book['title'][:28]}** {pct}%")
+        more = f" · +{len(reading) - 2}" if len(reading) > 2 else ""
+        lines.append("💭 " + " · ".join(bits) + more)
 
     if completed:
         last = max(completed, key=book_completed_sort_key)
-        stars = cozy_stars(last.get("rating"), "not rated yet")
-        embed.add_field(
-            name="🌷 Just finished",
-            value=f"**{last['title'][:42]}**\n{stars}",
-            inline=False,
-        )
+        stars = cozy_stars(last.get("rating"), "")
+        lines.append(f"🌷 **{last['title'][:34]}** {stars}".strip())
 
     badges = get_profile_badges(completed)
     if badges:
         labels = compact_badge_labels(badges)
-        shown = labels[:6]
-        # Keep cute, but wrap every 3 badges so mobile doesn't feel sparse/cramped
-        rows = [" · ".join(shown[i:i + 3]) for i in range(0, len(shown), 3)]
-        if len(labels) > 6:
-            rows.append(f"*+{len(labels) - 6} more little wins*")
-        embed.add_field(name="🎀 Badges", value="\n".join(rows), inline=False)
+        shown = labels[:5]
+        more = f" · +{len(labels) - 5}" if len(labels) > 5 else ""
+        lines.append("🎀 " + " · ".join(shown) + more)
 
+    embed = discord.Embed(
+        title=f"🎀 {target_user.display_name}",
+        description="\n".join(lines),
+        color=COLORS["profile"],
+    )
+    apply_cozy_style(embed)
+    embed.set_thumbnail(url=target_user.display_avatar.url)
     embed.set_footer(text="happy reading ✨ · Diary & Challenge below")
     await interaction.response.send_message(
         embed=embed,
