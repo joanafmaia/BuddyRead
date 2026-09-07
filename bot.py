@@ -318,15 +318,20 @@ SHELF_ACTION_COPY = {
 }
 
 
-def build_shelf_action_embed(title, status, display_name=None):
+def build_shelf_action_embed(title, status, display_name=None, thumbnail_url=None, author=""):
     heading, color, body = SHELF_ACTION_COPY[status]
     who = f"**{display_name}** · " if display_name else ""
+    author_line = f"*{author}*\n" if author else ""
     embed = discord.Embed(
         title=heading,
-        description=f"{who}**{title}**\n{body}",
+        description=f"{who}**{title}**\n{author_line}{COZY_DIVIDER}\n{body}",
         color=color,
     )
-    return apply_cozy_style(embed)
+    apply_cozy_style(embed)
+    if thumbnail_url:
+        embed.set_thumbnail(url=thumbnail_url)
+    embed.set_footer(text="happy reading ✨")
+    return embed
 
 
 def current_year():
@@ -1348,7 +1353,17 @@ class RatingView(discord.ui.View):
 
 # 5. BOOKSHELF CORE BUTTONS
 class BookshelfButtons(discord.ui.View):
-    def __init__(self, book_id, title, total_pages, categories=None, search_items=None, search_query="", author=""):
+    def __init__(
+        self,
+        book_id,
+        title,
+        total_pages,
+        categories=None,
+        search_items=None,
+        search_query="",
+        author="",
+        thumbnail_url="",
+    ):
         super().__init__(timeout=180)
         self.book_id = book_id
         self.title = title
@@ -1360,6 +1375,7 @@ class BookshelfButtons(discord.ui.View):
         self.search_items = search_items or []
         self.search_query = search_query
         self.author = author or ""
+        self.thumbnail_url = thumbnail_url or ""
         for child in self.children:
             if isinstance(child, discord.ui.Button) and child.label == "Back" and not self.search_items:
                 child.label = "Cancel"
@@ -1432,31 +1448,34 @@ class BookshelfButtons(discord.ui.View):
                 self.book_id, self.title, owner_id=str(interaction.user.id)
             )
 
-        embed = build_shelf_action_embed(self.title, status, interaction.user.display_name)
-        posted = False
-        if interaction.channel is not None:
-            try:
-                await interaction.channel.send(embed=embed)
-                posted = True
-            except discord.HTTPException as e:
-                print(f"shelf confirmation send error: {e}")
-        if posted:
-            try:
-                await interaction.delete_original_response()
-            except (discord.HTTPException, discord.NotFound):
-                pass
-            if rating_view:
-                await interaction.followup.send(
-                    f"✨ Rate **{self.title}** with stars — only you can see this.",
-                    view=rating_view,
-                    ephemeral=True,
-                )
-            return
-
+        embed = build_shelf_action_embed(
+            self.title,
+            status,
+            interaction.user.display_name,
+            thumbnail_url=self.thumbnail_url,
+            author=self.author,
+        )
+        # Replace the private search UI with the confirmation (don't leave search hanging).
         await interaction.edit_original_response(
+            content=None,
             embed=embed,
             view=rating_view,
         )
+
+        # Also share a short public note in the channel when possible.
+        public_labels = {
+            "to_read": "💌 added to wishlist",
+            "reading": "💭 started reading",
+            "completed": "✨ finished",
+        }
+        label = public_labels.get(status, "updated")
+        if interaction.guild and interaction.channel is not None:
+            try:
+                await interaction.channel.send(
+                    f"🎀 **{interaction.user.display_name}** {label} **{self.title}**"
+                )
+            except discord.HTTPException as e:
+                print(f"shelf public confirmation error: {e}")
 
     @discord.ui.button(label="Wishlist", style=discord.ButtonStyle.blurple, emoji="💌")
     async def to_read(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -1511,12 +1530,14 @@ class SearchResultSelect(discord.ui.Select):
             pages = volume_info.get("pageCount", 0)
             categories = volume_info.get("categories", [])
             authors = ", ".join(volume_info.get("authors", []))
+            thumbnail = volume_info.get("imageLinks", {}).get("thumbnail", "").replace("http://", "https://")
             embed = build_book_embed(volume_info)
             await interaction.response.edit_message(
                 embed=embed,
                 view=BookshelfButtons(
                     book_id, book_title, pages, categories,
                     search_items=self.items, search_query=self.query, author=authors,
+                    thumbnail_url=thumbnail,
                 ),
             )
         except Exception as e:
@@ -2001,10 +2022,14 @@ async def search(interaction: discord.Interaction, title: str, author: str = Non
                 pages = volume_info.get("pageCount", 0)
                 categories = volume_info.get("categories", [])
                 authors = ", ".join(volume_info.get("authors", []))
+                thumbnail = volume_info.get("imageLinks", {}).get("thumbnail", "").replace("http://", "https://")
                 embed = build_book_embed(volume_info)
                 await interaction.followup.send(
                     embed=embed,
-                    view=BookshelfButtons(book_id, book_title, pages, categories, author=authors),
+                    view=BookshelfButtons(
+                        book_id, book_title, pages, categories,
+                        author=authors, thumbnail_url=thumbnail,
+                    ),
                 )
             else:
                 embed = build_search_results_embed(items, title)
