@@ -152,7 +152,7 @@ def cozy_stars(rating, empty="not rated yet"):
     return "💛" * int(rating)
 
 
-def progress_bar(current, total, length=8):
+def progress_bar(current, total, length=5):
     if total <= 0:
         return "🤍" * length
     percent = min(max(current / total, 0), 1)
@@ -547,6 +547,19 @@ def get_profile_badges(completed):
     return badges
 
 
+def compact_badge_labels(badges):
+    """Short emoji + name only, for mobile-friendly profile rows."""
+    labels = []
+    for badge in badges:
+        match = re.match(r"^(\S+)\s+\*\*(.+?)\*\*", badge)
+        if match:
+            labels.append(f"{match.group(1)} {match.group(2)}")
+            continue
+        cut = re.split(r"\s*[:—]\s*", badge, maxsplit=1)[0].strip()
+        labels.append(cut[:28] if cut else badge[:28])
+    return labels
+
+
 def get_finish_achievements(completed_books, book):
     completed_count = len(completed_books)
     achievements = []
@@ -779,6 +792,14 @@ class PaginatorView(discord.ui.View):
             await interaction.response.defer()
 
 
+SHELF_STATUS_LABELS = {
+    "reading": "Reading",
+    "completed": "Finished",
+    "to_read": "Wishlist",
+    "abandoned": "Paused",
+}
+
+
 LIBRARY_STATUS_ICONS = {
     "reading": "💭",
     "completed": "✨",
@@ -787,11 +808,11 @@ LIBRARY_STATUS_ICONS = {
 }
 
 LIBRARY_SECTION_LABELS = {
-    "all": "🎀 Full Collection",
-    "reading": "💭 Currently Reading",
-    "completed": "✨ Finished & Loved",
+    "all": "🎀 All books",
+    "reading": "💭 Reading",
+    "completed": "✨ Finished",
     "to_read": "💌 Wishlist",
-    "abandoned": "🍂 Maybe Later",
+    "abandoned": "🍂 Paused",
 }
 
 
@@ -808,30 +829,27 @@ def format_library_card(book):
     title = book.get("title", "Unknown Title")
     status = book.get("status", "to_read")
     icon = LIBRARY_STATUS_ICONS.get(status, "📕")
-    author = book.get("author") or ""
-    author_bit = f" · *{author[:40]}*" if author else ""
 
     if status == "reading":
         total = book.get("total_pages", 0) or 0
         current = book.get("current_page", 0) or 0
         pct = round((current / total) * 100) if total > 0 else 0
-        hearts = progress_bar(current, total)
-        detail = f"{hearts}\n{pct}% · page {current}/{total if total > 0 else '?'}"
+        bar = progress_bar(current, total, length=5)
+        detail = f"`{bar}` **{pct}%**"
     elif status == "completed":
-        rating = cozy_stars(book.get("rating"))
+        rating = cozy_stars(book.get("rating"), "💌")
         year = book.get("completed_year")
-        detail = f"loved it · {rating}" + (f"\nfinished in {year}" if year else "")
-        review = (book.get("review") or "").strip()
-        if review:
-            snippet = review[:80] + ("..." if len(review) > 80 else "")
-            detail += f"\n*{snippet}*"
+        detail = f"{rating}" + (f" · {year}" if year else "")
     elif status == "abandoned":
-        detail = "paused for now"
+        detail = "🍂 paused for now"
     else:
-        pages = book.get("total_pages", 0) or 0
-        detail = f"on the wishlist · {pages} pages" if pages > 0 else "waiting on the wishlist"
+        detail = "💌 on the wishlist"
 
-    return f"{icon} {title[:60]}{author_bit}", detail
+    return f"{icon} {title[:42]}", detail
+
+
+def library_book_key(book):
+    return (book.get("book_id") or book.get("title") or "book")[:100]
 
 
 class LibraryView(discord.ui.View):
@@ -844,12 +862,12 @@ class LibraryView(discord.ui.View):
     }
 
     def __init__(self, display_name, bookshelf, section="all", owner_id=None, viewer_id=None):
-        super().__init__(timeout=180)
+        super().__init__(timeout=300)
         self.display_name = display_name
         self.bookshelf = bookshelf
         self.section = section
         self.current_page = 0
-        self.items_per_page = 24
+        self.items_per_page = 9
         self.owner_id = str(owner_id) if owner_id else None
         self.viewer_id = str(viewer_id) if viewer_id else None
         self.selected_key = None
@@ -865,21 +883,48 @@ class LibraryView(discord.ui.View):
         start = self.current_page * self.items_per_page
         return self.filtered_books[start:start + self.items_per_page]
 
+    def selected_book(self):
+        if not self.selected_key:
+            return None
+        return find_shelf_book(self.bookshelf, self.selected_key)
+
     def _rebuild_section_select(self):
         for child in self.children.copy():
             if isinstance(child, LibrarySectionSelect):
                 self.remove_item(child)
         self.add_item(LibrarySectionSelect(self))
 
-    def _rebuild_manage_controls(self):
+    def _clear_manage_items(self):
         for child in self.children.copy():
-            if isinstance(child, (LibraryManageBookSelect, LibraryManageActionSelect)):
+            if isinstance(
+                child,
+                (
+                    LibraryManageBookSelect,
+                    LibraryShelfButton,
+                    LibraryEditDetailsButton,
+                    LibraryRemoveBookButton,
+                ),
+            ):
                 self.remove_item(child)
+
+    def _rebuild_manage_controls(self):
+        self._clear_manage_items()
         if not self.is_owner or not self.page_books():
             self.selected_key = None
             return
+
+        page_keys = {library_book_key(book) for book in self.page_books()}
+        if self.selected_key and self.selected_key not in page_keys:
+            self.selected_key = None
+
         self.add_item(LibraryManageBookSelect(self))
-        self.add_item(LibraryManageActionSelect(self))
+        if self.selected_key:
+            self.add_item(LibraryShelfButton(self, "to_read", "Wishlist", "💌", row=3))
+            self.add_item(LibraryShelfButton(self, "reading", "Reading", "💭", row=3))
+            self.add_item(LibraryShelfButton(self, "completed", "Finished", "✨", row=3))
+            self.add_item(LibraryShelfButton(self, "abandoned", "Paused", "🍂", row=3))
+            self.add_item(LibraryEditDetailsButton(self))
+            self.add_item(LibraryRemoveBookButton(self))
 
     def _refresh_items(self):
         _, _, filter_fn = self.SECTIONS[self.section]
@@ -897,44 +942,43 @@ class LibraryView(discord.ui.View):
         total_books = len(self.bookshelf)
         start = self.current_page * self.items_per_page
         page_books = self.page_books()
+        selected = self.selected_book()
+        shelf_name = "All" if self.section == "all" else title.replace("🎀 ", "").replace("💭 ", "").replace("✨ ", "").replace("💌 ", "").replace("🍂 ", "")
 
-        if self.section == "all":
-            shelf_label = "your whole cozy collection"
-        else:
-            shelf_label = title.lower()
+        description = (
+            f"{COZY_DIVIDER}\n"
+            f"💭 **{counts['reading']}** · ✨ **{counts['completed']}** · "
+            f"💌 **{counts['to_read']}** · 🍂 **{counts['abandoned']}**\n"
+            f"🌸 **{len(self.filtered_books)}** on this shelf · **{total_books}** total"
+        )
+        if self.is_owner and selected:
+            description += f"\n💕 Selected: **{selected.get('title')[:48]}** — pick a shelf 👇"
+        elif self.is_owner and page_books:
+            description += "\n🌷 Pick a book, then tuck it onto a shelf"
 
         embed = discord.Embed(
-            title=f"🎀 {self.display_name}'s Cozy Library",
-            description=(
-                f"✨ *welcome to {shelf_label}* ✨\n"
-                f"**{len(self.filtered_books)}** sweet reads on this shelf\n\n"
-                f"🌸 **{total_books}** books total\n"
-                f"💭 {counts['reading']} reading  ·  "
-                f"✨ {counts['completed']} finished  ·  "
-                f"💌 {counts['to_read']} wishlist  ·  "
-                f"🍂 {counts['abandoned']} paused\n"
-                "˚ · ☆ · ˚ · ☆ · ˚ · ☆ · ˚"
-            ),
+            title=f"🎀 {self.display_name}'s {shelf_name}",
+            description=description,
             color=color,
         )
-        embed.set_author(name=COZY_AUTHOR)
+        apply_cozy_style(embed)
 
         if not page_books:
-            embed.add_field(name="🌷 Empty shelf", value="*this shelf is waiting for its first book* 💕", inline=False)
+            embed.add_field(name="🌷 Empty shelf", value="*Nothing here yet — add a book with `/search` 💕*", inline=False)
         else:
             for index, book in enumerate(page_books, start=start + 1):
                 name, value = format_library_card(book)
-                embed.add_field(name=f"˚ {index:02d} · {name}", value=value, inline=True)
+                marker = "💕 " if self.selected_key and library_book_key(book) == self.selected_key else ""
+                embed.add_field(name=f"{marker}{index}. {name}", value=value, inline=True)
 
-        embed.set_footer(
-            text=(
-                f"page {self.current_page + 1} of {self.total_pages} · happy reading 💕"
-                + (" · pick a book below to edit or remove" if self.is_owner else "")
-            )
-        )
+        footer = f"page {self.current_page + 1}/{self.total_pages} ✨"
+        if self.is_owner:
+            footer += " · pick a book → move shelves"
+        embed.set_footer(text=footer)
+
         featured_book_id = None
-        if self.section == "reading":
-            featured_book_id = next((book.get("book_id") for book in page_books if book.get("book_id")), None)
+        if self.section == "reading" and len(page_books) == 1:
+            featured_book_id = page_books[0].get("book_id")
         return embed, featured_book_id
 
     async def apply_library_cover(self, embed, book_id):
@@ -951,6 +995,46 @@ class LibraryView(discord.ui.View):
         self._rebuild_section_select()
         self._rebuild_manage_controls()
 
+    async def refresh_message(self, interaction: discord.Interaction):
+        embed, book_id = self.get_embed()
+        await self.apply_library_cover(embed, book_id)
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    async def apply_status_move(self, interaction: discord.Interaction, status):
+        if not self.is_owner or str(interaction.user.id) != self.owner_id:
+            await interaction.response.send_message("🌷 You can only manage your own library.", ephemeral=True)
+            return
+        if not self.selected_key:
+            await interaction.response.send_message("🌷 Pick a book first 👇", ephemeral=True)
+            return
+
+        book, updates = await apply_book_edits(self.owner_id, self.selected_key, status=status)
+        await self.reload_from_db()
+        await self.refresh_message(interaction)
+        if book:
+            label = SHELF_STATUS_LABELS.get(status, status)
+            await interaction.followup.send(
+                f"✨ **{book['title']}** → {label}",
+                ephemeral=True,
+            )
+            if status == "completed":
+                user_id = self.owner_id
+                user_profile = await users_col.find_one({"_id": user_id})
+                if user_profile and is_current_year_finish(book):
+                    await mark_buddy_read_finish(user_id, book)
+                    await users_col.update_one(
+                        {"_id": user_id},
+                        {"$set": {"bookshelf": user_profile["bookshelf"]}},
+                    )
+                    completed_books = [b for b in user_profile["bookshelf"] if b["status"] == "completed"]
+                    await announce_book_finished(bot, interaction.user, book, completed_books, user_id)
+                rating_view = RatingView(book.get("book_id") or self.selected_key, book["title"], owner_id=user_id)
+                await interaction.followup.send(
+                    f"✨ Rate **{book['title']}** — only you can see this.",
+                    view=rating_view,
+                    ephemeral=True,
+                )
+
     async def _edit_with_cover(self, interaction: discord.Interaction, embed, book_id):
         self._rebuild_manage_controls()
         await self.apply_library_cover(embed, book_id)
@@ -960,6 +1044,7 @@ class LibraryView(discord.ui.View):
     async def previous_page(self, interaction: discord.Interaction, button: discord.ui.Button):
         if self.current_page > 0:
             self.current_page -= 1
+            self.selected_key = None
             embed, book_id = self.get_embed()
             await self._edit_with_cover(interaction, embed, book_id)
         else:
@@ -969,6 +1054,7 @@ class LibraryView(discord.ui.View):
     async def next_page(self, interaction: discord.Interaction, button: discord.ui.Button):
         if self.current_page < self.total_pages - 1:
             self.current_page += 1
+            self.selected_key = None
             embed, book_id = self.get_embed()
             await self._edit_with_cover(interaction, embed, book_id)
         else:
@@ -985,7 +1071,7 @@ class LibrarySectionSelect(discord.ui.Select):
             for key, (label, _, _) in LibraryView.SECTIONS.items()
         ]
         super().__init__(
-            placeholder=current_label,
+            placeholder=f"Browse: {current_label}",
             options=options,
             min_values=1,
             max_values=1,
@@ -999,9 +1085,7 @@ class LibrarySectionSelect(discord.ui.Select):
         self.library_view._refresh_items()
         self.library_view._rebuild_section_select()
         self.library_view._rebuild_manage_controls()
-        embed, book_id = self.library_view.get_embed()
-        await self.library_view.apply_library_cover(embed, book_id)
-        await interaction.response.edit_message(embed=embed, view=self.library_view)
+        await self.library_view.refresh_message(interaction)
 
 
 class LibraryManageBookSelect(discord.ui.Select):
@@ -1009,17 +1093,23 @@ class LibraryManageBookSelect(discord.ui.Select):
         self.library_view = library_view
         options = []
         for book in library_view.page_books()[:25]:
-            key = (book.get("book_id") or book.get("title") or "book")[:100]
-            title = (book.get("title") or "Unknown Title")[:100]
+            key = library_book_key(book)
+            title = (book.get("title") or "Unknown Title")[:90]
+            status = SHELF_STATUS_LABELS.get(book.get("status"), book.get("status") or "")
             options.append(
                 discord.SelectOption(
                     label=title,
+                    description=f"now: {status}"[:100],
                     value=key,
                     default=(key == library_view.selected_key),
                 )
             )
+        placeholder = "Pick a book to move…"
+        selected = library_view.selected_book()
+        if selected:
+            placeholder = f"Selected: {selected.get('title', 'book')[:80]}"
         super().__init__(
-            placeholder="Manage a book on this page",
+            placeholder=placeholder,
             options=options,
             min_values=1,
             max_values=1,
@@ -1032,9 +1122,63 @@ class LibraryManageBookSelect(discord.ui.Select):
             return
         self.library_view.selected_key = self.values[0]
         self.library_view._rebuild_manage_controls()
-        embed, book_id = self.library_view.get_embed()
-        await self.library_view.apply_library_cover(embed, book_id)
-        await interaction.response.edit_message(embed=embed, view=self.library_view)
+        await self.library_view.refresh_message(interaction)
+
+
+class LibraryShelfButton(discord.ui.Button):
+    def __init__(self, library_view, status, label, emoji, row=3):
+        super().__init__(label=label, emoji=emoji, style=discord.ButtonStyle.secondary, row=row)
+        self.library_view = library_view
+        self.status = status
+
+    async def callback(self, interaction: discord.Interaction):
+        await self.library_view.apply_status_move(interaction, self.status)
+
+
+class LibraryEditDetailsButton(discord.ui.Button):
+    def __init__(self, library_view):
+        super().__init__(label="Edit details", emoji="✏️", style=discord.ButtonStyle.primary, row=4)
+        self.library_view = library_view
+
+    async def callback(self, interaction: discord.Interaction):
+        view = self.library_view
+        if not view.is_owner or str(interaction.user.id) != view.owner_id:
+            await interaction.response.send_message("🌷 You can only manage your own library.", ephemeral=True)
+            return
+        if not view.selected_key:
+            await interaction.response.send_message("🌷 Pick a book first 👇", ephemeral=True)
+            return
+        book = view.selected_book()
+        title = book["title"] if book else "this book"
+        await interaction.response.send_modal(
+            LibraryEditModal(view, view.selected_key, title, interaction.message)
+        )
+
+
+class LibraryRemoveBookButton(discord.ui.Button):
+    def __init__(self, library_view):
+        super().__init__(label="Remove", emoji="🗑️", style=discord.ButtonStyle.danger, row=4)
+        self.library_view = library_view
+
+    async def callback(self, interaction: discord.Interaction):
+        view = self.library_view
+        if not view.is_owner or str(interaction.user.id) != view.owner_id:
+            await interaction.response.send_message("🌷 You can only manage your own library.", ephemeral=True)
+            return
+        if not view.selected_key:
+            await interaction.response.send_message("🌷 Pick a book first 👇", ephemeral=True)
+            return
+        book = view.selected_book()
+        title = book["title"] if book else "this book"
+        confirm = RemoveBookConfirmView(
+            view.owner_id, view.selected_key, title,
+            library_view=view, source_message=interaction.message,
+        )
+        await interaction.response.send_message(
+            f"🗑️ Remove **{title}** from your library?",
+            view=confirm,
+            ephemeral=True,
+        )
 
 
 class RemoveBookConfirmView(discord.ui.View):
@@ -1076,87 +1220,7 @@ class RemoveBookConfirmView(discord.ui.View):
             return
         for child in self.children:
             child.disabled = True
-        await interaction.response.edit_message(content="✅ Kept on your shelf.", view=self)
-
-
-class LibraryManageActionSelect(discord.ui.Select):
-    def __init__(self, library_view):
-        self.library_view = library_view
-        options = [
-            discord.SelectOption(label="Reading now", value="reading"),
-            discord.SelectOption(label="Finished", value="completed"),
-            discord.SelectOption(label="Wishlist", value="to_read"),
-            discord.SelectOption(label="Paused", value="abandoned"),
-            discord.SelectOption(label="Edit rating / year / pages", value="edit"),
-            discord.SelectOption(label="Remove from library", value="remove"),
-        ]
-        super().__init__(
-            placeholder="Then choose an action",
-            options=options,
-            min_values=1,
-            max_values=1,
-            row=3,
-        )
-
-    async def callback(self, interaction: discord.Interaction):
-        view = self.library_view
-        if not view.is_owner or str(interaction.user.id) != view.owner_id:
-            await interaction.response.send_message("🌷 You can only manage your own library.", ephemeral=True)
-            return
-        if not view.selected_key:
-            await interaction.response.send_message("🌷 Pick a book in the menu above first.", ephemeral=True)
-            return
-
-        action = self.values[0]
-        if action == "edit":
-            book = find_shelf_book(view.bookshelf, view.selected_key)
-            title = book["title"] if book else "this book"
-            await interaction.response.send_modal(
-                LibraryEditModal(view, view.selected_key, title, interaction.message)
-            )
-            return
-
-        if action == "remove":
-            book = find_shelf_book(view.bookshelf, view.selected_key)
-            title = book["title"] if book else "this book"
-            confirm = RemoveBookConfirmView(
-                view.owner_id, view.selected_key, title,
-                library_view=view, source_message=interaction.message,
-            )
-            await interaction.response.send_message(
-                f"🗑️ Remove **{title}** from your library?",
-                view=confirm,
-                ephemeral=True,
-            )
-            return
-
-        book, updates = await apply_book_edits(view.owner_id, view.selected_key, status=action)
-        await view.reload_from_db()
-        embed, book_id = view.get_embed()
-        await view.apply_library_cover(embed, book_id)
-        await interaction.response.edit_message(embed=embed, view=view)
-        if book:
-            await interaction.followup.send(
-                f"✨ Updated **{book['title']}**: {', '.join(updates)}",
-                ephemeral=True,
-            )
-            if action == "completed":
-                user_id = view.owner_id
-                user_profile = await users_col.find_one({"_id": user_id})
-                if user_profile and is_current_year_finish(book):
-                    await mark_buddy_read_finish(user_id, book)
-                    await users_col.update_one(
-                        {"_id": user_id},
-                        {"$set": {"bookshelf": user_profile["bookshelf"]}},
-                    )
-                    completed_books = [b for b in user_profile["bookshelf"] if b["status"] == "completed"]
-                    await announce_book_finished(bot, interaction.user, book, completed_books, user_id)
-                rating_view = RatingView(book.get("book_id") or view.selected_key, book["title"], owner_id=user_id)
-                await interaction.followup.send(
-                    f"✨ Rate **{book['title']}** with stars — only you can see this.",
-                    view=rating_view,
-                    ephemeral=True,
-                )
+        await interaction.response.edit_message(content="✨ Kept on your shelf.", view=self)
 
 
 class LibraryEditModal(discord.ui.Modal, title="Edit book details"):
@@ -1596,14 +1660,6 @@ def find_shelf_book(bookshelf, identifier):
         if book.get("title", "").lower() == identifier.lower():
             return book
     return None
-
-
-SHELF_STATUS_LABELS = {
-    "reading": "reading now",
-    "completed": "finished",
-    "to_read": "wishlist",
-    "abandoned": "paused",
-}
 
 
 async def apply_book_edits(user_id, identifier, rating=None, year=None, total_pages=None, status=None):
@@ -2139,9 +2195,32 @@ async def profile(interaction: discord.Interaction, member: discord.Member = Non
     to_read = [b for b in bookshelf if b["status"] == "to_read"]
     year_completed = books_completed_in_year(bookshelf, current_year())
 
+    streak = display_streak(user_profile)
+    avg = average_rating(completed)
+    top_genre = favorite_genre(completed)
+
+    summary_bits = [
+        f"💭 **{len(reading)}** reading",
+        f"✨ **{len(completed)}** finished",
+        f"💌 **{len(to_read)}** wishlist",
+    ]
+    extras = []
+    if streak:
+        extras.append(f"🔥 **{streak}**-day streak")
+    if avg:
+        extras.append(f"💛 **{avg}** avg")
+    if top_genre:
+        extras.append(f"📂 **{top_genre}**")
+    if year_completed:
+        extras.append(f"🌸 **{len(year_completed)}** this year")
+
+    description = f"{COZY_DIVIDER}\n" + " · ".join(summary_bits)
+    if extras:
+        description += "\n" + " · ".join(extras)
+
     embed = discord.Embed(
-        title=f"🎀 {target_user.display_name}'s Reading Profile",
-        description=f"✨ *your cozy reading story* ✨\n{COZY_DIVIDER}",
+        title=f"🎀 {target_user.display_name}'s reading corner",
+        description=description,
         color=COLORS["profile"],
     )
     apply_cozy_style(embed)
@@ -2149,86 +2228,47 @@ async def profile(interaction: discord.Interaction, member: discord.Member = Non
 
     goal, challenge_year = active_yearly_goal(user_profile)
     if goal > 0:
-        year_completed = books_completed_in_year(bookshelf, challenge_year)
-        percent = min(round((len(year_completed) / goal) * 100), 100)
-        bar = progress_bar(len(year_completed), goal)
+        challenge_done = books_completed_in_year(bookshelf, challenge_year)
+        bar = progress_bar(len(challenge_done), goal, length=6)
+        percent = min(round((len(challenge_done) / goal) * 100), 100)
         embed.add_field(
-            name=f"🏆 {challenge_year} Reading Challenge",
-            value=f"`{bar}` **{len(year_completed)} / {goal}** books ({percent}%)",
+            name=f"🏆 {challenge_year} Challenge",
+            value=f"`{bar}` **{len(challenge_done)}/{goal}** ({percent}%)",
             inline=False,
         )
-
-    embed.add_field(name="💭 Reading", value=f"**{len(reading)}**", inline=True)
-    embed.add_field(name="✨ Finished", value=f"**{len(completed)}**", inline=True)
-    embed.add_field(name="💌 Wishlist", value=f"**{len(to_read)}**", inline=True)
-
-    streak = display_streak(user_profile)
-    if streak:
-        embed.add_field(name="🔥 Streak", value=f"**{streak}** day{'s' if streak != 1 else ''}", inline=True)
-
-    avg = average_rating(completed)
-    if avg:
-        embed.add_field(name="💛 Avg Rating", value=f"**{avg}** / 5", inline=True)
-    top_genre = favorite_genre(completed)
-    if top_genre:
-        embed.add_field(name="📂 Fav Genre", value=top_genre, inline=True)
-    if year_completed:
-        embed.add_field(name="🌸 This Year", value=f"**{len(year_completed)}** finished", inline=True)
 
     if reading:
         reading_lines = []
-        for book in reading[:5]:
+        for book in reading[:3]:
             total = book.get("total_pages", 0) or 0
             current_page = book.get("current_page", 0) or 0
             pct = round((current_page / total) * 100) if total > 0 else 0
-            reading_lines.append(
-                f"**{book['title']}**\n`{progress_bar(current_page, total)}` **{pct}%**"
-            )
-        if len(reading) > 5:
-            reading_lines.append(f"*+ {len(reading) - 5} more in `/library`*")
-        embed.add_field(
-            name="💭 Currently Reading",
-            value="\n\n".join(reading_lines),
-            inline=False,
-        )
-        first_cover = next((book.get("book_id") for book in reading if book.get("book_id")), None)
-        if first_cover:
-            thumbnail = await fetch_book_thumbnail(first_cover)
-            if thumbnail:
-                embed.set_image(url=thumbnail)
+            bar = progress_bar(current_page, total, length=5)
+            reading_lines.append(f"**{book['title'][:36]}**\n`{bar}` {pct}%")
+        if len(reading) > 3:
+            reading_lines.append(f"*+{len(reading) - 3} more on the nightstand*")
+        embed.add_field(name="💭 Currently reading", value="\n".join(reading_lines), inline=False)
 
     if completed:
         last = max(completed, key=book_completed_sort_key)
-        stars = cozy_stars(last.get("rating"))
-        latest = f"**{last['title']}** · {stars}"
-        author = last.get("author")
-        if author:
-            latest += f" · *{author}*"
-        review = (last.get("review") or "").strip()
-        if review:
-            snippet = review[:80] + ("..." if len(review) > 80 else "")
-            latest += f"\n*{snippet}*"
-        embed.add_field(name="🌷 Latest Finish", value=latest, inline=False)
-
-    reviewed = [b for b in completed if (b.get("review") or "").strip()]
-    if reviewed:
-        reviewed.sort(key=book_completed_sort_key, reverse=True)
-        lines = []
-        for book in reviewed[:3]:
-            text = book["review"].strip()
-            if len(text) > 140:
-                text = text[:137] + "..."
-            stars = cozy_stars(book.get("rating"), "")
-            lines.append(f"**{book['title']}** {stars}\n*{text}*")
-        embed.add_field(name="✍️ Recent reviews", value="\n\n".join(lines), inline=False)
+        stars = cozy_stars(last.get("rating"), "not rated yet")
+        embed.add_field(
+            name="🌷 Just finished",
+            value=f"**{last['title'][:42]}**\n{stars}",
+            inline=False,
+        )
 
     badges = get_profile_badges(completed)
-    embed.add_field(
-        name="🎀 Achievements",
-        value="\n".join(badges) if badges else "*no badges yet — your first finish unlocks one!* 💕",
-        inline=False,
-    )
-    embed.set_footer(text="keep reading, you're doing amazing ✨")
+    if badges:
+        labels = compact_badge_labels(badges)
+        shown = labels[:6]
+        # Keep cute, but wrap every 3 badges so mobile doesn't feel sparse/cramped
+        rows = [" · ".join(shown[i:i + 3]) for i in range(0, len(shown), 3)]
+        if len(labels) > 6:
+            rows.append(f"*+{len(labels) - 6} more little wins*")
+        embed.add_field(name="🎀 Badges", value="\n".join(rows), inline=False)
+
+    embed.set_footer(text="happy reading ✨ · Diary & Challenge below")
     await interaction.response.send_message(
         embed=embed,
         view=ProfileView(target_user.display_name, user_id, str(interaction.user.id)),
