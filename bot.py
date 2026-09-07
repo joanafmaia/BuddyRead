@@ -139,6 +139,8 @@ COLORS = {
 
 COZY_AUTHOR = "BuddyRead · your cozy reading corner ✨"
 COZY_DIVIDER = "˚ · ☆ · ˚ · ☆ · ˚"
+# Bump when shipping UX so we can tell if Render actually redeployed.
+APP_BUILD = "compact-profile"
 
 
 def apply_cozy_style(embed):
@@ -1878,7 +1880,7 @@ _commands_synced = False
 @bot.event
 async def on_ready():
     global _commands_synced
-    print(f"🚀 Bot {bot.user} está online e pronto!")
+    print(f"🚀 Bot {bot.user} está online e pronto! build={APP_BUILD}")
 
     if _commands_synced:
         return
@@ -2252,7 +2254,7 @@ async def profile(interaction: discord.Interaction, member: discord.Member = Non
     )
     apply_cozy_style(embed)
     embed.set_thumbnail(url=target_user.display_avatar.url)
-    embed.set_footer(text="happy reading ✨ · Diary & Challenge below")
+    embed.set_footer(text=f"happy reading ✨ · {APP_BUILD}")
     await interaction.response.send_message(
         embed=embed,
         view=ProfileView(target_user.display_name, user_id, str(interaction.user.id)),
